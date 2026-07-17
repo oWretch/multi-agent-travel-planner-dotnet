@@ -1,49 +1,59 @@
 using Azure.AI.OpenAI;
 using Azure.Identity;
-using Azure.Monitor.OpenTelemetry.AspNetCore;
 using Microsoft.Agents.AI;
+using Microsoft.OpenTelemetry;
 using MultiAgentTravelPlanner.Agents;
 using MultiAgentTravelPlanner.Models;
 using MultiAgentTravelPlanner.Tools;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using OpenTelemetry.Metrics;
-using OpenTelemetry.Logs;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ---------------------------------------------------------------------------
-// OpenTelemetry + Azure Monitor distro
+// OpenTelemetry
 //
-// The Azure Monitor distro auto-wires traces, logs, and metrics to App Insights
-// when APPLICATIONINSIGHTS_CONNECTION_STRING is set. We extend it to listen to
-// the Microsoft Agent Framework activity sources so per-agent spans/metrics
-// flow with gen_ai.* attributes (the GenAI semantic conventions). The Agents
-// (preview) view in App Insights groups and aggregates on those attributes.
+// Microsoft OpenTelemetry configures the instrumentation and Azure Monitor
+// exporter. The custom sources below capture the Microsoft Agent Framework and
+// underlying OpenAI spans that carry the gen_ai.* semantic conventions.
 // ---------------------------------------------------------------------------
 
-// The Azure Monitor distro auto-reads APPLICATIONINSIGHTS_CONNECTION_STRING.
-// UseAzureMonitor() is the entry point; subsequent .WithTracing/.WithMetrics
-// calls on the same builder add the Microsoft Agent Framework activity
-// sources and meters to the same pipeline.
+var appInsightsConnectionString =
+    builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
+if (string.IsNullOrWhiteSpace(appInsightsConnectionString))
+{
+    appInsightsConnectionString =
+        builder.Configuration["ApplicationInsights:ConnectionString"];
+}
+
+if (string.IsNullOrWhiteSpace(appInsightsConnectionString))
+{
+    throw new InvalidOperationException(
+        "APPLICATIONINSIGHTS_CONNECTION_STRING is required.");
+}
+
 builder.Services.AddOpenTelemetry()
-    .UseAzureMonitor()
-    .ConfigureResource(r => r
-        .AddService(serviceName: "multi-agent-travel-planner"))
     .WithTracing(t => t
-        // Source name used by Microsoft.Agents.AI's UseOpenTelemetry wrapper
-        // in AgentCatalog. Must match the value passed to UseOpenTelemetry.
-        .AddSource(MultiAgentTravelPlanner.Agents.AgentCatalog.TelemetrySourceName)
-        // Microsoft.Extensions.AI emits OpenAI client + chat spans here
+        .ConfigureResource(r => r
+            .AddService(serviceName: "multi-agent-travel-planner"))
+        .AddSource(AgentCatalog.TelemetrySourceName)
         .AddSource("Microsoft.Extensions.AI*")
-        // OpenAI SDK client spans
         .AddSource("OpenAI*")
         .AddSource("Experimental.OpenAI*")
         .AddSource("Azure.AI.OpenAI*"))
     .WithMetrics(m => m
-        .AddMeter(MultiAgentTravelPlanner.Agents.AgentCatalog.TelemetrySourceName)
+        .ConfigureResource(r => r
+            .AddService(serviceName: "multi-agent-travel-planner"))
+        .AddMeter(AgentCatalog.TelemetrySourceName)
         .AddMeter("Microsoft.Extensions.AI*")
         .AddMeter("OpenAI*"));
+
+builder.UseMicrosoftOpenTelemetry(options =>
+{
+    options.Exporters = ExportTarget.AzureMonitor;
+    options.AzureMonitor.ConnectionString = appInsightsConnectionString;
+});
 
 // ---------------------------------------------------------------------------
 // Azure OpenAI client (managed identity, no keys)
@@ -62,8 +72,7 @@ builder.Services.AddSingleton(new AzureOpenAIClient(
 // Agents
 //
 // Each AIAgent is a top-level entity that the Agents view groups telemetry by
-// (via gen_ai.agent.name / gen_ai.agent.id). Names must match between the
-// agent registration and the spans the framework emits.
+// through gen_ai.agent.name and gen_ai.agent.id.
 // ---------------------------------------------------------------------------
 
 builder.Services.AddSingleton<TravelTools>();
@@ -71,7 +80,7 @@ builder.Services.AddSingleton<AgentCatalog>(sp =>
 {
     var client = sp.GetRequiredService<AzureOpenAIClient>();
     var tools = sp.GetRequiredService<TravelTools>();
-    return AgentCatalog.Build(client, aoaiDeployment, tools);
+    return AgentCatalog.Build(client, aoaiDeployment, tools, builder.Configuration);
 });
 
 // In-memory per-session conversation state. Keep it simple — this sample is

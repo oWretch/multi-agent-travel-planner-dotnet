@@ -52,12 +52,35 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
           value: openAiDeployment
         }
         {
+          name: 'Agents__Coordinator__Id'
+          value: 'Coordinator'
+        }
+        {
+          name: 'Agents__WeatherAdvisor__Id'
+          value: 'WeatherAdvisor'
+        }
+        {
+          name: 'Agents__CurrencyConverter__Id'
+          value: 'CurrencyConverter'
+        }
+        {
+          name: 'Agents__BudgetOptimizer__Id'
+          value: 'BudgetOptimizer'
+        }
+        {
+          name: 'Agents__LocalKnowledge__Id'
+          value: 'LocalKnowledge'
+        }
+        {
+          name: 'Agents__ItineraryPlanner__Id'
+          value: 'ItineraryPlanner'
+        }
+        {
           name: 'ASPNETCORE_ENVIRONMENT'
           value: 'Production'
         }
-        // Auto-instrumentation is performed in code via the Azure Monitor
-        // OpenTelemetry distro. Disable the App Service codeless attach so
-        // the two don't fight over the same activity sources.
+        // Instrumentation is configured in code. Disable the App Service
+        // codeless attach so both pipelines don't subscribe to the same sources.
         {
           name: 'ApplicationInsightsAgent_EXTENSION_VERSION'
           value: 'disabled'

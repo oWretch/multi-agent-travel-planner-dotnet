@@ -21,6 +21,10 @@ sibling Azure-Samples repos.
 * OpenTelemetry instrumented with the [GenAI semantic conventions][semconv] so
   each agent shows up separately in App Service → **AI (preview) → Agents**
   and in the Application Insights **Agents (preview)** view.
+* [Microsoft OpenTelemetry Distro][ms-otel] sends telemetry to Application
+  Insights through its Azure Monitor exporter.
+* Stable, configuration-driven agent IDs can be changed through App Service
+  application settings without changing source code.
 * Azure OpenAI (`gpt-4o`) via managed identity — no API keys in the app.
 * `azd up` deploys App Service plan, Linux Web App (.NET 9), Application
   Insights (workspace-based), Log Analytics workspace, and the Azure OpenAI
@@ -101,13 +105,16 @@ troubleshooting.
 │   ├── main.bicep                    #   App Insights, Azure OpenAI
 │   ├── main.parameters.json
 │   └── modules/
-└── src/MultiAgentTravelPlanner/
-    ├── Program.cs                    # OpenTelemetry + agent registration
+├── src/MultiAgentTravelPlanner/
+    ├── Program.cs                    # Microsoft OpenTelemetry pipeline
     ├── Agents/AgentCatalog.cs        # Coordinator + 5 specialist agents
+    ├── Agents/AgentIdConfiguration.cs # Stable configurable agent IDs
     ├── Tools/TravelTools.cs          # Function tools the agents call
     ├── Models/
     ├── wwwroot/                      # Minimal chat UI
     └── appsettings.json
+└── tests/MultiAgentTravelPlanner.Tests/
+    └── AgentIdConfigurationTests.cs  # Agent ID configuration tests
 ```
 
 ## How OpenTelemetry is wired
@@ -120,22 +127,35 @@ troubleshooting.
    This is what makes Microsoft Agent Framework emit `gen_ai.agent.name`,
    `gen_ai.agent.id`, `gen_ai.usage.*`, and tool-call spans for every agent
    run.
-2. **Send traces and metrics to App Insights** via
-   [`UseAzureMonitor()`][azmon-otel] (the Azure Monitor OpenTelemetry distro).
+2. **Configure Microsoft OpenTelemetry** with `UseMicrosoftOpenTelemetry()` and
+   enable `ExportTarget.AzureMonitor` to send telemetry to Application Insights.
 3. **Subscribe the OpenTelemetry pipeline to the agent activity source** with
    `.AddSource(AgentCatalog.TelemetrySourceName)` and to the OpenAI /
    Extensions.AI sources for the underlying chat-completion spans.
 
-Each agent is constructed via the `ChatClientAgentOptions` overload with a
-stable `Id` equal to its name. This is important: without an explicit `Id`,
-every restart would generate new GUIDs and the Agents tab would only show the
-latest run's counts.
+Each agent has a stable logical name and reads its effective ID from
+`Agents:<LogicalName>:Id`. The logical name is the default, and the Bicep
+template creates a corresponding App Service application setting for every
+agent:
+
+| Agent | App Service application setting |
+|-------|---------------------------------|
+| Coordinator | `Agents__Coordinator__Id` |
+| WeatherAdvisor | `Agents__WeatherAdvisor__Id` |
+| CurrencyConverter | `Agents__CurrencyConverter__Id` |
+| BudgetOptimizer | `Agents__BudgetOptimizer__Id` |
+| LocalKnowledge | `Agents__LocalKnowledge__Id` |
+| ItineraryPlanner | `Agents__ItineraryPlanner__Id` |
+
+IDs must be nonempty, unique, and stable across restarts. The app validates
+these requirements at startup.
 
 ## Resources
 
 * [Tutorial: Monitor a multi-agent app on App Service with OpenTelemetry and Application Insights (.NET)][tutorial]
 * [Microsoft Agent Framework][maf]
 * [Enable Azure Monitor OpenTelemetry for ASP.NET Core][azmon-otel]
+* [Microsoft OpenTelemetry Distro][ms-otel]
 * [OpenTelemetry generative AI semantic conventions][semconv]
 * [Agents (preview) in Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/agents-view)
 * [Build agentic web applications on Azure App Service](https://learn.microsoft.com/azure/app-service/scenario-ai-agentic-web-apps)
@@ -149,4 +169,5 @@ MIT — see [LICENSE.md](LICENSE.md).
 [semconv]: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 [dac]: https://learn.microsoft.com/dotnet/api/azure.identity.defaultazurecredential
 [azmon-otel]: https://learn.microsoft.com/azure/azure-monitor/app/opentelemetry-enable
+[ms-otel]: https://github.com/microsoft/opentelemetry-distro-dotnet
 [tutorial]: https://learn.microsoft.com/azure/app-service/tutorial-ai-agent-monitoring-dotnet

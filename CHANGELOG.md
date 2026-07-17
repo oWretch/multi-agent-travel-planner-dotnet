@@ -1,5 +1,13 @@
 ## multi-agent-travel-planner-dotnet Changelog
 
+## Unreleased
+
+* Replace the Azure Monitor-specific OpenTelemetry distribution with Microsoft
+  OpenTelemetry while retaining Azure Monitor export.
+* Make every agent ID configurable through a stable
+  `Agents__<LogicalName>__Id` App Service application setting.
+* Validate that configured agent IDs are nonempty and unique at startup.
+
 <a name="0.1.0"></a>
 # 0.1.0 (2026-05-14)
 
