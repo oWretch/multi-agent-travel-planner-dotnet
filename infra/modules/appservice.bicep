@@ -4,8 +4,66 @@ param location string
 param tags object = {}
 
 param appInsightsConnectionString string
+param foundryProjectEndpoint string
 param openAiEndpoint string
 param openAiDeployment string
+
+@description('Stable agent IDs hosted in the app. Each entry becomes an Agents__<id>__Id application setting.')
+param agents array
+
+@description('Optional per-agent deployment overrides keyed by logical agent name.')
+param agentDeployments object = {}
+
+var agentIdAppSettings = [
+  for agent in agents: {
+    name: 'Agents__${agent}__Id'
+    value: agent
+  }
+]
+
+var agentDeploymentAppSettings = [
+  for agentDeployment in items(agentDeployments): {
+    name: 'Agents__${agentDeployment.key}__Deployment'
+    value: agentDeployment.value
+  }
+]
+
+var baseAppSettings = [
+  {
+    name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+    value: appInsightsConnectionString
+  }
+  {
+    name: 'AzureAIProject__Endpoint'
+    value: foundryProjectEndpoint
+  }
+  {
+    name: 'Foundry__ProjectEndpoint'
+    value: foundryProjectEndpoint
+  }
+  {
+    name: 'FOUNDRY_PROJECT_ENDPOINT'
+    value: foundryProjectEndpoint
+  }
+  {
+    name: 'AzureOpenAI__Endpoint'
+    value: openAiEndpoint
+  }
+  {
+    name: 'AzureOpenAI__Deployment'
+    value: openAiDeployment
+  }
+  {
+    name: 'ASPNETCORE_ENVIRONMENT'
+    value: 'Production'
+  }
+  // Instrumentation is configured in code. Disable the App Service
+  // codeless attach so both pipelines don't subscribe to the same sources.
+  {
+    name: 'ApplicationInsightsAgent_EXTENSION_VERSION'
+    value: 'disabled'
+  }
+]
 
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: planName
@@ -38,54 +96,7 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       http20Enabled: true
-      appSettings: [
-        {
-          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-          value: appInsightsConnectionString
-        }
-        {
-          name: 'AzureOpenAI__Endpoint'
-          value: openAiEndpoint
-        }
-        {
-          name: 'AzureOpenAI__Deployment'
-          value: openAiDeployment
-        }
-        {
-          name: 'Agents__Coordinator__Id'
-          value: 'Coordinator'
-        }
-        {
-          name: 'Agents__WeatherAdvisor__Id'
-          value: 'WeatherAdvisor'
-        }
-        {
-          name: 'Agents__CurrencyConverter__Id'
-          value: 'CurrencyConverter'
-        }
-        {
-          name: 'Agents__BudgetOptimizer__Id'
-          value: 'BudgetOptimizer'
-        }
-        {
-          name: 'Agents__LocalKnowledge__Id'
-          value: 'LocalKnowledge'
-        }
-        {
-          name: 'Agents__ItineraryPlanner__Id'
-          value: 'ItineraryPlanner'
-        }
-        {
-          name: 'ASPNETCORE_ENVIRONMENT'
-          value: 'Production'
-        }
-        // Instrumentation is configured in code. Disable the App Service
-        // codeless attach so both pipelines don't subscribe to the same sources.
-        {
-          name: 'ApplicationInsightsAgent_EXTENSION_VERSION'
-          value: 'disabled'
-        }
-      ]
+      appSettings: concat(baseAppSettings, agentIdAppSettings, agentDeploymentAppSettings)
     }
   }
 }

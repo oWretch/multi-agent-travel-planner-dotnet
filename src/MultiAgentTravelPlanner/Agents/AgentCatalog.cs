@@ -32,51 +32,79 @@ public sealed class AgentCatalog
 
     public static AgentCatalog Build(
         AzureOpenAIClient client,
+        string defaultDeployment,
+        TravelTools tools,
+        IConfiguration configuration) =>
+        BuildCore(
+            client,
+            tools,
+            configuration,
+            logicalName => AgentDeploymentConfiguration.Resolve(
+                configuration,
+                logicalName,
+                defaultDeployment));
+
+    public static AgentCatalog BuildWithSingleDeployment(
+        AzureOpenAIClient client,
         string deployment,
         TravelTools tools,
         IConfiguration configuration)
     {
-        AgentIdConfiguration.ValidateDistinct(configuration, LogicalAgentNames);
-        ChatClient chat = client.GetChatClient(deployment);
+        ArgumentException.ThrowIfNullOrWhiteSpace(deployment);
+        return BuildCore(client, tools, configuration, _ => deployment);
+    }
 
-        AIAgent weather = WithTelemetry(CreateAgent(chat,
+    private static AgentCatalog BuildCore(
+        AzureOpenAIClient client,
+        TravelTools tools,
+        IConfiguration configuration,
+        Func<string, string> resolveDeployment)
+    {
+        AgentIdConfiguration.ValidateDistinct(configuration, LogicalAgentNames);
+
+        AIAgent weather = WithTelemetry(CreateAgent(client,
+            resolveDeployment("WeatherAdvisor"),
             configuration,
             logicalName: "WeatherAdvisor",
             description: "Provides weather forecasts, packing recommendations, and activity suggestions based on destination weather conditions.",
             instructions: "You are a concise weather and packing advisor. Use the weather tool to look up the forecast before answering. Recommend appropriate clothing and one or two activities suited to the conditions.",
             tools: [AIFunctionFactory.Create(tools.GetWeatherForecast)]));
 
-        AIAgent currency = WithTelemetry(CreateAgent(chat,
+        AIAgent currency = WithTelemetry(CreateAgent(client,
+            resolveDeployment("CurrencyConverter"),
             configuration,
             logicalName: "CurrencyConverter",
             description: "Handles currency conversion, exchange rate information, and budget allocation across different currencies for travelers.",
             instructions: "You are a currency conversion specialist. Use the exchange-rate tool and present results in a short summary table.",
             tools: [AIFunctionFactory.Create(tools.GetExchangeRate)]));
 
-        AIAgent budget = WithTelemetry(CreateAgent(chat,
+        AIAgent budget = WithTelemetry(CreateAgent(client,
+            resolveDeployment("BudgetOptimizer"),
             configuration,
             logicalName: "BudgetOptimizer",
             description: "Optimizes travel budget allocation across accommodation, food, activities, and transport with cost-saving strategies.",
             instructions: "You optimize a travel budget across lodging, food, activities, and transport. Use the daily-budget tool to ground your suggestions and propose at most three cost-saving tips.",
             tools: [AIFunctionFactory.Create(tools.GetDailyBudget)]));
 
-        AIAgent local = WithTelemetry(CreateAgent(chat,
+        AIAgent local = WithTelemetry(CreateAgent(client,
+            resolveDeployment("LocalKnowledge"),
             configuration,
             logicalName: "LocalKnowledge",
             description: "Provides destination-specific knowledge including cultural insights, safety tips, local transportation, and authentic experiences.",
             instructions: "You are a local expert and cultural guide. Use the cultural-tip tool when relevant. Keep responses under 120 words.",
             tools: [AIFunctionFactory.Create(tools.GetCulturalTip)]));
 
-        AIAgent itinerary = WithTelemetry(CreateAgent(chat,
+        AIAgent itinerary = WithTelemetry(CreateAgent(client,
+            resolveDeployment("ItineraryPlanner"),
             configuration,
             logicalName: "ItineraryPlanner",
             description: "Creates detailed day-by-day travel itineraries with timing, venues, meal recommendations, and weather considerations.",
-            instructions: "You build a clear day-by-day itinerary. Be specific about venues and timing. Keep it to 3–5 days unless the user asks for more."));
+            instructions: "You build a clear day-by-day itinerary. Be specific about venues and timing. Keep it to 3-5 days unless the user asks for more."));
 
         var specialists = new[] { weather, currency, budget, local, itinerary };
 
-        // The coordinator delegates by exposing each specialist as a callable tool.
-        AIAgent coordinator = WithTelemetry(CreateAgent(chat,
+        AIAgent coordinator = WithTelemetry(CreateAgent(client,
+            resolveDeployment("Coordinator"),
             configuration,
             logicalName: "Coordinator",
             description: "Coordinates the multi-agent travel planning workflow and aggregates results from specialized agents into a complete travel plan.",
@@ -90,13 +118,17 @@ public sealed class AgentCatalog
     }
 
     private static AIAgent CreateAgent(
-        ChatClient chat,
+        AzureOpenAIClient client,
+        string deployment,
         IConfiguration configuration,
         string logicalName,
         string description,
         string instructions,
         IList<AITool>? tools = null)
-        => chat.AsAIAgent(new ChatClientAgentOptions
+    {
+        ChatClient chat = client.GetChatClient(deployment);
+
+        return chat.AsAIAgent(new ChatClientAgentOptions
         {
             Id = AgentIdConfiguration.Resolve(configuration, logicalName),
             Name = logicalName,
@@ -107,6 +139,7 @@ public sealed class AgentCatalog
                 Tools = tools,
             },
         });
+    }
 
     private static AIAgent WithTelemetry(AIAgent agent) =>
         agent.AsBuilder()

@@ -25,10 +25,14 @@ sibling Azure-Samples repos.
   Insights through its Azure Monitor exporter.
 * Stable, configuration-driven agent IDs can be changed through App Service
   application settings without changing source code.
-* Azure OpenAI (`gpt-4o`) via managed identity — no API keys in the app.
+* Each agent is registered as an external agent in the Foundry project by an
+  `azd` postdeploy hook, so every agent gets its own entry under **Agents** in
+  the Foundry portal with its traces and run history attached.
+* Azure AI Foundry project with a deployed model (default `gpt-4.1-mini`) via
+  managed identity, with no API keys in the app.
 * `azd up` deploys App Service plan, Linux Web App (.NET 9), Application
-  Insights (workspace-based), Log Analytics workspace, and the Azure OpenAI
-  account in one shot.
+  Insights (workspace-based), Log Analytics workspace, and the Azure AI
+  Foundry account and project in one shot.
 * Minimal chat UI with markdown rendering and a "+ New chat" reset button.
 
 ## What lights up
@@ -39,14 +43,17 @@ After you deploy and exercise the app, two new portal experiences are populated:
   rate, and a link to view in Application Insights.
 * **Application Insights → Agents (preview)** — agent operational metrics,
   tool calls, token consumption by model, and trace drill-downs.
+* **Microsoft Foundry → project → Agents** lists every agent in the app. Each
+  one is registered as an external agent during deployment, and its **Traces**
+  tab shows the runs matched by `gen_ai.agent.id`.
 
 ## Getting Started
 
 ### Prerequisites
 
 * An Azure subscription with permissions to create App Service, Application
-  Insights, and Azure OpenAI resources.
-* Quota for the `gpt-4o` model in your target region. See
+  Insights, and an Azure AI Foundry resource.
+* Quota for the model you deploy in your target region. See
   [Azure OpenAI quotas](https://learn.microsoft.com/azure/ai-services/openai/quotas-limits).
 * The [.NET 9 SDK](https://dotnet.microsoft.com/download).
 * The [Azure Developer CLI (azd)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
@@ -66,9 +73,14 @@ completes, follow the printed URL to chat with the agents. Send a few messages
 (for example, *"Plan a 4-day trip to Lisbon in July for two on a midrange
 budget"*), then open the portal:
 
-1. Open your Web App resource in the [Azure portal](https://portal.azure.com).
-2. Select **AI (preview)** → **Agents**.
-3. Click **View in Application Insights** to drill into the Agents (preview) view.
+1. Open [Microsoft Foundry](https://ai.azure.com/) and select the project
+   created by the deployment.
+2. Select **Agents**. All six agents are listed because the postdeploy hook
+   registered them. Pick one and open its **Traces** tab. The deployment
+   automatically connects the project's Application Insights resource and
+   grants the project identity permission to read GenAI trace content.
+3. In the App Service resource, select **AI (preview)** → **Agents** and click
+   **View in Application Insights** to drill into the Agents (preview) view.
 
 To tear everything down:
 
@@ -80,14 +92,19 @@ azd down --purge
 
 ```bash
 cd src/MultiAgentTravelPlanner
-dotnet user-secrets set "AzureOpenAI:Endpoint"   "https://<your-aoai>.openai.azure.com/"
-dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-4o"
+dotnet user-secrets set "AzureOpenAI:Endpoint" "https://<your-foundry>.openai.azure.com/"
+dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-4.1-mini"
+dotnet user-secrets set "Agents:Coordinator:Deployment" "<coordinator-deployment>"
+dotnet user-secrets set "Agents:ItineraryPlanner:Deployment" "<planner-deployment>"
 dotnet user-secrets set "ApplicationInsights:ConnectionString" "<your AI connection string>"
 dotnet run
 ```
 
 The app uses [`DefaultAzureCredential`][dac], so signing in with `az login` is
-enough — no API keys.
+enough and no API keys are required. For local traces to appear in Foundry, use
+the connection string of the Application Insights resource connected to that
+Foundry project. Per-agent deployment settings are optional. Agents without an
+override use `AzureOpenAI:Deployment`.
 
 ## Demo
 
@@ -100,20 +117,25 @@ troubleshooting.
 
 ```
 .
-├── azure.yaml                        # azd config (App Service host)
+├── azure.yaml                        # azd config (App Service host, postdeploy hook)
 ├── infra/                            # Bicep: App Service plan, Web App,
-│   ├── main.bicep                    #   App Insights, Azure OpenAI
+│   ├── main.bicep                    #   App Insights, Azure AI Foundry account + project
 │   ├── main.parameters.json
 │   └── modules/
+├── scripts/
+│   ├── register-foundry-agents.sh    # Registers the agents with Foundry (POSIX)
+│   └── register-foundry-agents.ps1   # Registers the agents with Foundry (Windows)
 ├── src/MultiAgentTravelPlanner/
     ├── Program.cs                    # Microsoft OpenTelemetry pipeline
     ├── Agents/AgentCatalog.cs        # Coordinator + 5 specialist agents
+    ├── Agents/AgentDeploymentConfiguration.cs # Per-agent model deployment fallback
     ├── Agents/AgentIdConfiguration.cs # Stable configurable agent IDs
     ├── Tools/TravelTools.cs          # Function tools the agents call
     ├── Models/
     ├── wwwroot/                      # Minimal chat UI
     └── appsettings.json
 └── tests/MultiAgentTravelPlanner.Tests/
+    ├── AgentDeploymentConfigurationTests.cs # Agent deployment configuration tests
     └── AgentIdConfigurationTests.cs  # Agent ID configuration tests
 ```
 
@@ -134,9 +156,11 @@ troubleshooting.
    Extensions.AI sources for the underlying chat-completion spans.
 
 Each agent has a stable logical name and reads its effective ID from
-`Agents:<LogicalName>:Id`. The logical name is the default, and the Bicep
-template creates a corresponding App Service application setting for every
-agent:
+`Agents:<LogicalName>:Id`. The logical name is the default. The `agents` list in
+`infra/main.bicep` holds those names and drives two things: one App Service
+application setting per agent, and the `AZURE_AI_AGENT_IDS` output that the
+registration hook consumes. Keep it in sync with
+`AgentCatalog.LogicalAgentNames`.
 
 | Agent | App Service application setting |
 |-------|---------------------------------|
@@ -150,6 +174,82 @@ agent:
 IDs must be nonempty, unique, and stable across restarts. The app validates
 these requirements at startup.
 
+## Configure models per agent
+
+Set `Agents:<LogicalName>:Deployment` to route an agent to a different model
+deployment in the same Foundry account. The value is an Azure deployment name,
+not necessarily the underlying model name. If the setting is absent, the agent
+uses `AzureOpenAI:Deployment`.
+
+For `azd` deployments, add the models to `additionalOpenAiDeployments` and map
+agents to deployment names with `agentDeployments`. For example:
+
+```bicep
+additionalOpenAiDeployments: [
+  {
+    name: 'fast-model'
+    modelName: 'gpt-4.1-mini'
+    modelVersion: '<available-version>'
+    capacity: 20
+  }
+  {
+    name: 'reasoning-model'
+    modelName: 'gpt-5'
+    modelVersion: '<available-version>'
+    capacity: 20
+  }
+]
+agentDeployments: {
+  Coordinator: 'reasoning-model'
+  WeatherAdvisor: 'fast-model'
+  CurrencyConverter: 'fast-model'
+  BudgetOptimizer: 'reasoning-model'
+  LocalKnowledge: 'fast-model'
+  ItineraryPlanner: 'reasoning-model'
+}
+```
+
+Model versions and regional availability change, so use versions available in
+the deployment region. Leaving both parameters at their defaults preserves the
+single-model setup.
+
+## How agents are registered with Foundry
+
+Traces alone put the agents in Application Insights, but the Foundry portal only
+lists an agent under **Agents** once it has a registration whose `otel_agent_id`
+matches the `gen_ai.agent.id` attribute on the spans. `azure.yaml` automates
+that with a `postdeploy` hook:
+
+```yaml
+hooks:
+  postdeploy:
+    posix:
+      shell: sh
+      run: ./scripts/register-foundry-agents.sh
+```
+
+The script reads `AZURE_AI_FOUNDRY_PROJECT_ENDPOINT` and `AZURE_AI_AGENT_IDS`
+from the `azd` environment, acquires a token with `azd auth token`, and creates
+one external agent registration per ID. It skips agents that already exist, so
+repeated `azd deploy` runs don't create duplicate registrations or churn agent
+versions. Registration happens after deploy rather than after provision, which
+means changing agents only requires `azd deploy`.
+
+Two details are worth knowing:
+
+* External agent registration is a Foundry preview API, so the script sends the
+  `Foundry-Features: ExternalAgents=V1Preview` header. There's no equivalent
+  Bicep resource type or `az` command.
+* The identity running `azd` needs the **Foundry User** role on the project.
+  `infra/modules/foundry.bicep` grants it to `principalId` during provisioning.
+
+The hook is configured with `continueOnError: true`, so a preview API failure
+reports the error without failing the deployment. Run it again on its own with:
+
+```bash
+azd hooks run postdeploy
+```
+
 ## Resources
 
 * [Tutorial: Monitor a multi-agent app on App Service with OpenTelemetry and Application Insights (.NET)][tutorial]
@@ -158,6 +258,8 @@ these requirements at startup.
 * [Microsoft OpenTelemetry Distro][ms-otel]
 * [OpenTelemetry generative AI semantic conventions][semconv]
 * [Agents (preview) in Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/agents-view)
+* [Register external agents for observability and evaluation](https://learn.microsoft.com/azure/ai-foundry/agents/how-to/register-external-agent)
+* [Customize azd workflows using command and event hooks](https://learn.microsoft.com/azure/developer/azure-developer-cli/azd-extensibility)
 * [Build agentic web applications on Azure App Service](https://learn.microsoft.com/azure/app-service/scenario-ai-agentic-web-apps)
 
 ## License

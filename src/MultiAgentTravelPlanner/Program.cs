@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Azure.AI.OpenAI;
 using Azure.Identity;
 using Microsoft.Agents.AI;
@@ -56,13 +57,17 @@ builder.UseMicrosoftOpenTelemetry(options =>
 });
 
 // ---------------------------------------------------------------------------
-// Azure OpenAI client (managed identity, no keys)
+// Azure OpenAI client for the model deployed in the Foundry account
+// (managed identity, no keys)
 // ---------------------------------------------------------------------------
 
 var aoaiEndpoint = builder.Configuration["AzureOpenAI:Endpoint"]
     ?? throw new InvalidOperationException("AzureOpenAI:Endpoint is required.");
 var aoaiDeployment = builder.Configuration["AzureOpenAI:Deployment"]
     ?? throw new InvalidOperationException("AzureOpenAI:Deployment is required.");
+var modelRouterDeployment = builder.Configuration["AzureOpenAI:ModelRouterDeployment"]
+    ?? throw new InvalidOperationException(
+        "AzureOpenAI:ModelRouterDeployment is required.");
 
 builder.Services.AddSingleton(new AzureOpenAIClient(
     new Uri(aoaiEndpoint),
@@ -76,11 +81,22 @@ builder.Services.AddSingleton(new AzureOpenAIClient(
 // ---------------------------------------------------------------------------
 
 builder.Services.AddSingleton<TravelTools>();
-builder.Services.AddSingleton<AgentCatalog>(sp =>
+builder.Services.AddSingleton<AgentCatalogRegistry>(sp =>
 {
     var client = sp.GetRequiredService<AzureOpenAIClient>();
     var tools = sp.GetRequiredService<TravelTools>();
-    return AgentCatalog.Build(client, aoaiDeployment, tools, builder.Configuration);
+    var fixedCatalog = AgentCatalog.Build(
+        client,
+        aoaiDeployment,
+        tools,
+        builder.Configuration);
+    var modelRouterCatalog = AgentCatalog.BuildWithSingleDeployment(
+        client,
+        modelRouterDeployment,
+        tools,
+        builder.Configuration);
+
+    return new AgentCatalogRegistry(fixedCatalog, modelRouterCatalog);
 });
 
 // In-memory per-session conversation state. Keep it simple — this sample is
@@ -98,7 +114,7 @@ app.MapControllers();
 
 app.MapPost("/api/chat", async (
     ChatRequest req,
-    AgentCatalog catalog,
+    AgentCatalogRegistry catalogs,
     ConversationStore store,
     CancellationToken ct) =>
 {
@@ -107,14 +123,37 @@ app.MapPost("/api/chat", async (
         return Results.BadRequest(new { error = "Message is required." });
     }
 
+    if (!AgentRoutingModeParser.TryParse(req.RoutingMode, out var routingMode))
+    {
+        return Results.BadRequest(new
+        {
+            error = "RoutingMode must be either 'fixed' or 'model-router'.",
+        });
+    }
+
     var sessionId = string.IsNullOrWhiteSpace(req.SessionId)
         ? Guid.NewGuid().ToString("N")
         : req.SessionId!;
-    var session = await store.GetOrCreateAsync(sessionId, catalog.Coordinator, ct);
+    var coordinator = catalogs.ResolveCoordinator(routingMode);
+    var session = await store.GetOrCreateAsync(
+        sessionId,
+        routingMode,
+        coordinator,
+        ct);
 
-    var response = await catalog.Coordinator.RunAsync(req.Message, session, cancellationToken: ct);
+    Activity.Current?.SetTag(
+        "travel_planner.routing.mode",
+        routingMode.ToConfigurationValue());
 
-    return Results.Ok(new ChatResponse(sessionId, response.Text ?? string.Empty));
+    var response = await coordinator.RunAsync(
+        req.Message,
+        session,
+        cancellationToken: ct);
+
+    return Results.Ok(new ChatResponse(
+        sessionId,
+        response.Text ?? string.Empty,
+        routingMode.ToConfigurationValue()));
 });
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
