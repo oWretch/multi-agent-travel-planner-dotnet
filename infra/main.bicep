@@ -76,6 +76,14 @@ param modelRouterDeployment string = 'model-router'
 @description('Optional principal ID of the user/identity that will run the app locally. Granted Cognitive Services OpenAI User on the Foundry account so DefaultAzureCredential works without keys.')
 param principalId string = ''
 
+@description('APIM publisher contact email. Required when provisioning the AI gateway.')
+param apiManagementPublisherEmail string
+
+@minValue(0)
+@maxValue(3600)
+@description('Exact-request cache lifetime in seconds. Zero disables gateway caching.')
+param aiGatewayCacheDurationSeconds int = 600
+
 @description('Stable agent IDs hosted in the app. Each entry becomes an App Service application setting and an external agent registration in the Foundry project.')
 param agents array = [
   'Coordinator'
@@ -95,6 +103,9 @@ var abbrs = {
 }
 
 var resourceToken = uniqueString(subscription().id, resourceGroup().id, environmentName)
+var gatewayName = 'apim-${resourceToken}'
+// The deterministic URL avoids a dependency cycle: APIM authorizes the web app identity.
+var gatewayEndpoint = 'https://${gatewayName}.azure-api.net'
 var tags = {
   'azd-env-name': environmentName
   workload: 'multi-agent-travel-planner'
@@ -144,11 +155,26 @@ module appService 'modules/appservice.bicep' = {
     tags: union(tags, { 'azd-service-name': 'web' })
     appInsightsConnectionString: appInsights.outputs.connectionString
     foundryProjectEndpoint: foundry.outputs.projectEndpoint
-    openAiEndpoint: foundry.outputs.openAiEndpoint
+    openAiEndpoint: gatewayEndpoint
     openAiDeployment: foundry.outputs.deploymentName
     agents: agents
     agentDeployments: agentDeployments
     modelRouterDeployment: modelRouterDeployment
+  }
+}
+
+module aiGateway 'modules/apim.bicep' = {
+  name: 'aiGateway'
+  params: {
+    name: gatewayName
+    location: location
+    tags: tags
+    publisherEmail: apiManagementPublisherEmail
+    openAiEndpoint: foundry.outputs.openAiEndpoint
+    appInsightsName: appInsights.outputs.name
+    webAppPrincipalId: appService.outputs.principalId
+    developerPrincipalId: principalId
+    cacheDurationSeconds: aiGatewayCacheDurationSeconds
   }
 }
 
@@ -158,6 +184,7 @@ module roleAssignments 'modules/roles.bicep' = {
     openAiAccountName: foundry.outputs.name
     webAppPrincipalId: appService.outputs.principalId
     userPrincipalId: principalId
+    gatewayPrincipalId: aiGateway.outputs.principalId
   }
 }
 
@@ -168,7 +195,10 @@ output APPLICATIONINSIGHTS_CONNECTION_STRING string = appInsights.outputs.connec
 output AZURE_AI_FOUNDRY_ACCOUNT_NAME string = foundry.outputs.name
 output AZURE_AI_FOUNDRY_PROJECT_NAME string = foundry.outputs.projectName
 output AZURE_AI_FOUNDRY_PROJECT_ENDPOINT string = foundry.outputs.projectEndpoint
-output AZURE_OPENAI_ENDPOINT string = foundry.outputs.openAiEndpoint
+output AZURE_OPENAI_ENDPOINT string = aiGateway.outputs.endpoint
+output AZURE_OPENAI_BACKEND_ENDPOINT string = foundry.outputs.openAiEndpoint
+output AZURE_AI_GATEWAY_NAME string = aiGateway.outputs.name
+output AZURE_AI_GATEWAY_STATELESS_RESPONSES string = 'true'
 output AZURE_OPENAI_DEPLOYMENT string = foundry.outputs.deploymentName
 output AZURE_OPENAI_MODEL_ROUTER_DEPLOYMENT string = modelRouterDeployment
 output AZURE_AI_AGENT_IDS string = join(agents, ',')

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ClientModel.Primitives;
 using Azure.AI.OpenAI;
 using Azure.Identity;
 using Microsoft.Agents.AI;
@@ -40,11 +41,11 @@ builder.Services.AddOpenTelemetry()
         .ConfigureResource(r => r
             .AddService(serviceName: "multi-agent-travel-planner"))
         .AddSource(AgentCatalog.TelemetrySourceName)
+        .AddSource(AIGatewayTelemetryHandler.SourceName)
         .AddSource("Microsoft.Extensions.AI*")
         .AddSource("OpenAI*")
         .AddSource("Experimental.OpenAI*")
-        .AddSource("Azure.AI.OpenAI*")
-        .AddProcessor(new AgentUsageParentProcessor()))
+        .AddSource("Azure.AI.OpenAI*"))
     .WithMetrics(m => m
         .ConfigureResource(r => r
             .AddService(serviceName: "multi-agent-travel-planner"))
@@ -80,7 +81,10 @@ var isAzureHosted =
     !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WEBSITE_SITE_NAME"))
     || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT"));
 
-builder.Services.AddSingleton(new AzureOpenAIClient(
+builder.Services.AddTransient<AIGatewayTelemetryHandler>();
+builder.Services.AddHttpClient("AzureOpenAI", client => client.Timeout = Timeout.InfiniteTimeSpan)
+    .AddHttpMessageHandler<AIGatewayTelemetryHandler>();
+builder.Services.AddSingleton(sp => new AzureOpenAIClient(
     new Uri(aoaiEndpoint),
     new DefaultAzureCredential(new DefaultAzureCredentialOptions
     {
@@ -88,7 +92,12 @@ builder.Services.AddSingleton(new AzureOpenAIClient(
         // unavailable IMDS endpoint and continues through developer credentials,
         // including the active Azure CLI login.
         ExcludeManagedIdentityCredential = !isAzureHosted,
-    })));
+    }),
+    new AzureOpenAIClientOptions
+    {
+        Transport = new HttpClientPipelineTransport(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzureOpenAI")),
+    }));
 
 // ---------------------------------------------------------------------------
 // Agents

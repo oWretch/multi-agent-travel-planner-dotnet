@@ -2,6 +2,15 @@ name: multi-agent-travel-planner-dotnet
 metadata:
   template: multi-agent-travel-planner-dotnet@0.1.0
 hooks:
+  predeploy:
+    posix:
+      shell: sh
+      run: sh ./scripts/configure-deployment.sh
+      interactive: true
+    windows:
+      shell: pwsh
+      run: ./scripts/configure-deployment.ps1
+      interactive: true
   # Register the deployed agents as external agents in the Foundry project so
   # their traces surface under Agents in the Foundry portal. Runs after deploy
   # so agent changes only need `azd deploy`, not a reprovision.
