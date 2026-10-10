@@ -2,7 +2,7 @@ using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using MultiAgentTravelPlanner.Tools;
-using OpenAI.Chat;
+using OpenAI.Responses;
 
 namespace MultiAgentTravelPlanner.Agents;
 
@@ -126,9 +126,11 @@ public sealed class AgentCatalog
         string instructions,
         IList<AITool>? tools = null)
     {
-        ChatClient chat = client.GetChatClient(deployment);
+#pragma warning disable OPENAI001
+        var responses = client.GetResponsesClient();
+#pragma warning restore OPENAI001
 
-        return chat.AsAIAgent(new ChatClientAgentOptions
+        return responses.AsAIAgent(new ChatClientAgentOptions
         {
             Id = AgentIdConfiguration.Resolve(configuration, logicalName),
             Name = logicalName,
@@ -138,7 +140,7 @@ public sealed class AgentCatalog
                 Instructions = instructions,
                 Tools = tools,
             },
-        });
+        }, deployment);
     }
 
     private static AIAgent WithTelemetry(AIAgent agent) =>

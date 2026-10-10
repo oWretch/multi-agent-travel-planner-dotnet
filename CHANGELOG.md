@@ -22,6 +22,8 @@
   agents according to each role's reasoning and latency needs.
 * Add a Balanced model-router deployment and a per-chat UI switch between
   fixed assignments and adaptive model routing.
+* Move agent requests from Chat Completions to the Azure OpenAI Responses API
+  so GPT-6 Astra can use reasoning and function tools together.
 
 <a name="0.1.0"></a>
 # 0.1.0 (2026-05-14)

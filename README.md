@@ -31,6 +31,9 @@ sibling Azure-Samples repos.
 * Azure AI Foundry project with fixed per-agent deployments: GPT-6 Astra for
   coordination, GPT-5.6 Luna for planning, and GPT-5.4 Mini for tool-focused
   specialists.
+* Agents use the Azure OpenAI Responses API rather than Chat Completions. This
+  is required for GPT-6 Astra when function tools are combined with reasoning
+  and also gives the model-router path the same tool-compatible client.
 * A Balanced `model-router` deployment can replace the fixed assignments for
   any chat. Its pool is limited to the same three model tiers so routing stays
   easy to explain and observe.
@@ -228,6 +231,11 @@ underlying model. The router deployment is configured through
 `infra/main.bicep` contains the fixed assignments, exact model versions, router
 pool, and capacity. The defaults were verified against the Australia East
 catalog. Check availability and quota before deploying to another region.
+
+The application currently uses `Azure.AI.OpenAI` `2.9.0-beta.1` because the
+Responses client is not available in the earlier stable package used by this
+sample. The Responses client is marked experimental by the OpenAI SDK, so the
+small, localized compiler warning suppression in `AgentCatalog` is intentional.
 
 ## How agents are registered with Foundry
 
