@@ -5,6 +5,7 @@ using Microsoft.Agents.AI;
 using Microsoft.OpenTelemetry;
 using MultiAgentTravelPlanner.Agents;
 using MultiAgentTravelPlanner.Models;
+using MultiAgentTravelPlanner.Observability;
 using MultiAgentTravelPlanner.Tools;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -42,7 +43,8 @@ builder.Services.AddOpenTelemetry()
         .AddSource("Microsoft.Extensions.AI*")
         .AddSource("OpenAI*")
         .AddSource("Experimental.OpenAI*")
-        .AddSource("Azure.AI.OpenAI*"))
+        .AddSource("Azure.AI.OpenAI*")
+        .AddProcessor(new AgentUsageParentProcessor()))
     .WithMetrics(m => m
         .ConfigureResource(r => r
             .AddService(serviceName: "multi-agent-travel-planner"))
