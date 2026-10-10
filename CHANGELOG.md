@@ -18,6 +18,10 @@
   hook from a single `agents` list in `infra/main.bicep`.
 * Grant the deploying identity the Foundry User role on the project so the
   registration hook works without manual role setup.
+* Deploy GPT-6 Astra, GPT-5.6 Luna, and GPT-5.4 Mini and assign them to
+  agents according to each role's reasoning and latency needs.
+* Add a Balanced model-router deployment and a per-chat UI switch between
+  fixed assignments and adaptive model routing.
 
 <a name="0.1.0"></a>
 # 0.1.0 (2026-05-14)

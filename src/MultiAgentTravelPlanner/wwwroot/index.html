@@ -73,6 +73,7 @@
       transition: border-color 0.15s ease, transform 0.08s ease, background 0.15s ease;
     }
     button.header-action:hover { border-color: var(--accent); transform: translateY(-1px); }
+    button.header-action:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
     button.header-action svg { width: 14px; height: 14px; }
     .logo {
       width: 36px; height: 36px; border-radius: 10px;
@@ -231,6 +232,24 @@
     button.send:hover { transform: translateY(-1px); }
     button.send:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
     button.send svg { width: 18px; height: 18px; }
+    .routing-switch {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      margin: 0 4px 10px;
+    }
+    .routing-switch .label { color: var(--muted); font-size: 0.78rem; }
+    .routing-options {
+      display: inline-flex; padding: 3px; gap: 3px;
+      border: 1px solid var(--border); border-radius: 10px; background: var(--bg-1);
+    }
+    .routing-option {
+      border: 0; border-radius: 7px; padding: 6px 10px;
+      color: var(--muted); background: transparent; cursor: pointer;
+      font: inherit; font-size: 0.78rem; font-weight: 500;
+    }
+    .routing-option[aria-pressed="true"] {
+      color: white; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+    }
+    .routing-option:disabled { opacity: 0.5; cursor: not-allowed; }
     .hint { font-size: 0.72rem; color: var(--muted); margin: 6px 4px 0; text-align: center; }
   </style>
 </head>
@@ -279,6 +298,13 @@
     </div>
 
     <div class="composer">
+      <div class="routing-switch">
+        <span class="label">Model strategy (changing it starts a new chat)</span>
+        <div class="routing-options" role="group" aria-label="Model strategy">
+          <button type="button" class="routing-option" data-routing-mode="fixed" aria-pressed="true">Fixed models</button>
+          <button type="button" class="routing-option" data-routing-mode="model-router" aria-pressed="false">Model router</button>
+        </div>
+      </div>
       <form id="chat">
         <textarea id="msg" rows="1" placeholder="Plan a 4-day trip to Lisbon in July for two on a midrange budget…" required></textarea>
         <button class="send" type="submit" id="send" aria-label="Send">
@@ -296,11 +322,13 @@
     marked.setOptions({ breaks: true, gfm: true });
 
     const log     = document.getElementById('log');
-    const empty   = document.getElementById('empty');
     const form    = document.getElementById('chat');
     const msg     = document.getElementById('msg');
     const send    = document.getElementById('send');
+    const newChat = document.getElementById('newChat');
+    const routingOptions = document.querySelectorAll('.routing-option');
     let sessionId = null;
+    let routingMode = 'fixed';
 
     // Autosize textarea
     msg.addEventListener('input', () => {
@@ -348,7 +376,7 @@
     }
     wireSuggestions();
 
-    document.getElementById('newChat').addEventListener('click', () => {
+    function resetConversation() {
       sessionId = null;
       log.innerHTML = EMPTY_HTML;
       wireSuggestions();
@@ -356,9 +384,26 @@
       msg.style.height = 'auto';
       msg.focus();
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    newChat.addEventListener('click', resetConversation);
+
+    routingOptions.forEach(option => {
+      option.addEventListener('click', () => {
+        const selectedMode = option.dataset.routingMode;
+        if (selectedMode === routingMode) return;
+
+        routingMode = selectedMode;
+        routingOptions.forEach(candidate => {
+          candidate.setAttribute(
+            'aria-pressed',
+            String(candidate.dataset.routingMode === routingMode));
+        });
+        resetConversation();
+      });
     });
 
-    function renderTurn(role, content, { markdown = false, isTyping = false } = {}) {
+    function renderTurn(role, content, { markdown = false, isTyping = false, label = null } = {}) {
       const turn = document.createElement('div');
       turn.className = 'turn ' + role;
 
@@ -371,7 +416,7 @@
       body.className = 'body';
       const who = document.createElement('div');
       who.className = 'who';
-      who.textContent = role === 'user' ? 'You' : 'Coordinator';
+      who.textContent = label || (role === 'user' ? 'You' : 'Coordinator');
       body.appendChild(who);
 
       const bubble = document.createElement('div');
@@ -397,20 +442,28 @@
       const text = msg.value.trim();
       if (!text) return;
 
-      if (empty) empty.remove();
+      document.getElementById('empty')?.remove();
 
       renderTurn('user', text);
       msg.value = '';
       msg.style.height = 'auto';
       send.disabled = true;
+      newChat.disabled = true;
+      routingOptions.forEach(option => option.disabled = true);
 
-      const typing = renderTurn('assistant', '', { isTyping: true });
+      const strategyLabel = routingMode === 'fixed'
+        ? 'Coordinator · Fixed models'
+        : 'Coordinator · Model router';
+      const typing = renderTurn('assistant', '', {
+        isTyping: true,
+        label: strategyLabel
+      });
 
       try {
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ message: text, sessionId })
+          body: JSON.stringify({ message: text, sessionId, routingMode })
         });
         if (!res.ok) {
           typing.bubble.innerHTML = `<strong>Error</strong> — request failed (${res.status})`;
@@ -423,6 +476,8 @@
         typing.bubble.innerHTML = `<strong>Error</strong> — ${String(err)}`;
       } finally {
         send.disabled = false;
+        newChat.disabled = false;
+        routingOptions.forEach(option => option.disabled = false);
         msg.focus();
         window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
       }

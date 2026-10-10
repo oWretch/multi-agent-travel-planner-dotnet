@@ -9,20 +9,69 @@ param environmentName string
 @description('Primary location for all resources.')
 param location string
 
-@description('Azure AI Foundry model to deploy.')
-param openAiModelName string = 'gpt-5.6-luna'
+@description('Default Azure AI Foundry model deployment used by the coordinator and as the application fallback.')
+param openAiModelName string = 'gpt-6-astra'
 
-@description('Azure AI Foundry model version.')
-param openAiModelVersion string = '2026-07-09'
+@description('Azure AI Foundry model version for the default deployment.')
+param openAiModelVersion string = '2026-09-03'
 
-@description('Capacity (TPM in thousands) for the model deployment.')
-param openAiModelCapacity int = 30
+@description('Capacity (TPM in thousands) for the default deployment.')
+param openAiModelCapacity int = 10
 
-@description('Additional Azure AI Foundry model deployments. Each item requires name, modelName, modelVersion, and capacity.')
-param additionalOpenAiDeployments array = []
+@description('Additional Azure AI Foundry model deployments used by fixed routing and model router.')
+param additionalOpenAiDeployments array = [
+  {
+    name: 'gpt-5.6-luna'
+    modelName: 'gpt-5.6-luna'
+    modelVersion: '2026-07-09'
+    capacity: 10
+  }
+  {
+    name: 'gpt-5.4-mini'
+    modelName: 'gpt-5.4-mini'
+    modelVersion: '2026-03-17'
+    capacity: 10
+  }
+  {
+    name: 'model-router'
+    modelName: 'model-router'
+    modelVersion: '2025-11-18'
+    capacity: 10
+    routing: {
+      mode: 'balanced'
+      models: [
+        {
+          format: 'OpenAI'
+          name: 'gpt-5.4-mini'
+          version: '2026-03-17'
+        }
+        {
+          format: 'OpenAI'
+          name: 'gpt-5.6-luna'
+          version: '2026-07-09'
+        }
+        {
+          format: 'OpenAI'
+          name: 'gpt-6-astra'
+          version: '2026-09-03'
+        }
+      ]
+    }
+  }
+]
 
-@description('Optional per-agent deployment overrides keyed by logical agent name. Values must match deployed model names.')
-param agentDeployments object = {}
+@description('Per-agent fixed deployment assignments keyed by logical agent name.')
+param agentDeployments object = {
+  Coordinator: 'gpt-6-astra'
+  WeatherAdvisor: 'gpt-5.4-mini'
+  CurrencyConverter: 'gpt-5.4-mini'
+  BudgetOptimizer: 'gpt-5.6-luna'
+  LocalKnowledge: 'gpt-5.4-mini'
+  ItineraryPlanner: 'gpt-5.6-luna'
+}
+
+@description('Model router deployment used when a chat selects adaptive routing.')
+param modelRouterDeployment string = 'model-router'
 
 @description('Optional principal ID of the user/identity that will run the app locally. Granted Cognitive Services OpenAI User on the Foundry account so DefaultAzureCredential works without keys.')
 param principalId string = ''
@@ -99,6 +148,7 @@ module appService 'modules/appservice.bicep' = {
     openAiDeployment: foundry.outputs.deploymentName
     agents: agents
     agentDeployments: agentDeployments
+    modelRouterDeployment: modelRouterDeployment
   }
 }
 
@@ -120,4 +170,5 @@ output AZURE_AI_FOUNDRY_PROJECT_NAME string = foundry.outputs.projectName
 output AZURE_AI_FOUNDRY_PROJECT_ENDPOINT string = foundry.outputs.projectEndpoint
 output AZURE_OPENAI_ENDPOINT string = foundry.outputs.openAiEndpoint
 output AZURE_OPENAI_DEPLOYMENT string = foundry.outputs.deploymentName
+output AZURE_OPENAI_MODEL_ROUTER_DEPLOYMENT string = modelRouterDeployment
 output AZURE_AI_AGENT_IDS string = join(agents, ',')

@@ -7,6 +7,7 @@ param appInsightsConnectionString string
 param foundryProjectEndpoint string
 param openAiEndpoint string
 param openAiDeployment string
+param modelRouterDeployment string
 
 @description('Stable agent IDs hosted in the app. Each entry becomes an Agents__<id>__Id application setting.')
 param agents array
@@ -52,6 +53,10 @@ var baseAppSettings = [
   {
     name: 'AzureOpenAI__Deployment'
     value: openAiDeployment
+  }
+  {
+    name: 'AzureOpenAI__ModelRouterDeployment'
+    value: modelRouterDeployment
   }
   {
     name: 'ASPNETCORE_ENVIRONMENT'

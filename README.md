@@ -28,12 +28,17 @@ sibling Azure-Samples repos.
 * Each agent is registered as an external agent in the Foundry project by an
   `azd` postdeploy hook, so every agent gets its own entry under **Agents** in
   the Foundry portal with its traces and run history attached.
-* Azure AI Foundry project with a deployed model (default `gpt-4.1-mini`) via
-  managed identity, with no API keys in the app.
+* Azure AI Foundry project with fixed per-agent deployments: GPT-6 Astra for
+  coordination, GPT-5.6 Luna for planning, and GPT-5.4 Mini for tool-focused
+  specialists.
+* A Balanced `model-router` deployment can replace the fixed assignments for
+  any chat. Its pool is limited to the same three model tiers so routing stays
+  easy to explain and observe.
 * `azd up` deploys App Service plan, Linux Web App (.NET 9), Application
   Insights (workspace-based), Log Analytics workspace, and the Azure AI
   Foundry account and project in one shot.
-* Minimal chat UI with markdown rendering and a "+ New chat" reset button.
+* Minimal chat UI with markdown rendering, a model-strategy switch, and a
+  "+ New chat" reset button.
 
 ## What lights up
 
@@ -93,9 +98,14 @@ azd down --purge
 ```bash
 cd src/MultiAgentTravelPlanner
 dotnet user-secrets set "AzureOpenAI:Endpoint" "https://<your-foundry>.openai.azure.com/"
-dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-4.1-mini"
-dotnet user-secrets set "Agents:Coordinator:Deployment" "<coordinator-deployment>"
-dotnet user-secrets set "Agents:ItineraryPlanner:Deployment" "<planner-deployment>"
+dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-6-astra"
+dotnet user-secrets set "AzureOpenAI:ModelRouterDeployment" "model-router"
+dotnet user-secrets set "Agents:Coordinator:Deployment" "gpt-6-astra"
+dotnet user-secrets set "Agents:WeatherAdvisor:Deployment" "gpt-5.4-mini"
+dotnet user-secrets set "Agents:CurrencyConverter:Deployment" "gpt-5.4-mini"
+dotnet user-secrets set "Agents:BudgetOptimizer:Deployment" "gpt-5.6-luna"
+dotnet user-secrets set "Agents:LocalKnowledge:Deployment" "gpt-5.4-mini"
+dotnet user-secrets set "Agents:ItineraryPlanner:Deployment" "gpt-5.6-luna"
 dotnet user-secrets set "ApplicationInsights:ConnectionString" "<your AI connection string>"
 dotnet run
 ```
@@ -103,8 +113,9 @@ dotnet run
 The app uses [`DefaultAzureCredential`][dac], so signing in with `az login` is
 enough and no API keys are required. For local traces to appear in Foundry, use
 the connection string of the Application Insights resource connected to that
-Foundry project. Per-agent deployment settings are optional. Agents without an
-override use `AzureOpenAI:Deployment`.
+Foundry project. These deployment names must already exist in the account.
+Per-agent settings are optional, and agents without an override use
+`AzureOpenAI:Deployment`.
 
 ## Demo
 
@@ -128,15 +139,18 @@ troubleshooting.
 ├── src/MultiAgentTravelPlanner/
     ├── Program.cs                    # Microsoft OpenTelemetry pipeline
     ├── Agents/AgentCatalog.cs        # Coordinator + 5 specialist agents
+    ├── Agents/AgentCatalogRegistry.cs # Fixed and model-router catalogs
     ├── Agents/AgentDeploymentConfiguration.cs # Per-agent model deployment fallback
     ├── Agents/AgentIdConfiguration.cs # Stable configurable agent IDs
+    ├── Agents/AgentRoutingMode.cs # Per-chat routing mode parsing
     ├── Tools/TravelTools.cs          # Function tools the agents call
     ├── Models/
     ├── wwwroot/                      # Minimal chat UI
     └── appsettings.json
 └── tests/MultiAgentTravelPlanner.Tests/
     ├── AgentDeploymentConfigurationTests.cs # Agent deployment configuration tests
-    └── AgentIdConfigurationTests.cs  # Agent ID configuration tests
+    ├── AgentIdConfigurationTests.cs  # Agent ID configuration tests
+    └── AgentRoutingModeTests.cs       # Chat routing mode tests
 ```
 
 ## How OpenTelemetry is wired
@@ -174,44 +188,46 @@ registration hook consumes. Keep it in sync with
 IDs must be nonempty, unique, and stable across restarts. The app validates
 these requirements at startup.
 
-## Configure models per agent
+## Model strategies
 
-Set `Agents:<LogicalName>:Deployment` to route an agent to a different model
-deployment in the same Foundry account. The value is an Azure deployment name,
-not necessarily the underlying model name. If the setting is absent, the agent
-uses `AzureOpenAI:Deployment`.
+The UI offers two strategies. Changing the strategy starts a new chat so one
+conversation never mixes session state from different agent catalogs.
 
-For `azd` deployments, add the models to `additionalOpenAiDeployments` and map
-agents to deployment names with `agentDeployments`. For example:
+### Fixed models
 
-```bicep
-additionalOpenAiDeployments: [
-  {
-    name: 'fast-model'
-    modelName: 'gpt-4.1-mini'
-    modelVersion: '<available-version>'
-    capacity: 20
-  }
-  {
-    name: 'reasoning-model'
-    modelName: 'gpt-5'
-    modelVersion: '<available-version>'
-    capacity: 20
-  }
-]
-agentDeployments: {
-  Coordinator: 'reasoning-model'
-  WeatherAdvisor: 'fast-model'
-  CurrencyConverter: 'fast-model'
-  BudgetOptimizer: 'reasoning-model'
-  LocalKnowledge: 'fast-model'
-  ItineraryPlanner: 'reasoning-model'
-}
-```
+The fixed strategy uses explicit deployment names for predictable behavior and
+clear cost attribution.
 
-Model versions and regional availability change, so use versions available in
-the deployment region. Leaving both parameters at their defaults preserves the
-single-model setup.
+| Agent | Deployment | Why |
+|-------|------------|-----|
+| Coordinator | `gpt-6-astra` (`2026-09-03`) | Strong orchestration, tool use, and planning |
+| BudgetOptimizer | `gpt-5.6-luna` (`2026-07-09`) | Constraint reasoning and cost tradeoffs |
+| ItineraryPlanner | `gpt-5.6-luna` (`2026-07-09`) | Multi-day planning and synthesis |
+| WeatherAdvisor | `gpt-5.4-mini` (`2026-03-17`) | Fast tool use and short recommendations |
+| CurrencyConverter | `gpt-5.4-mini` (`2026-03-17`) | Fast structured transformation |
+| LocalKnowledge | `gpt-5.4-mini` (`2026-03-17`) | Concise, lower-cost responses |
+
+Set `Agents:<LogicalName>:Deployment` to change an assignment. The value is an
+Azure deployment name, not necessarily the underlying model name. An agent
+without an override uses `AzureOpenAI:Deployment`.
+
+### Model router
+
+The model-router strategy sends every agent request through the `model-router`
+deployment. The deployment uses Balanced mode and can select from:
+
+* `gpt-5.4-mini` for simple or latency-sensitive work.
+* `gpt-5.6-luna` for planning and synthesis.
+* `gpt-6-astra` for difficult orchestration requests.
+
+The response model recorded by OpenTelemetry shows which underlying model
+served each request. Azure Monitor can also split model-router metrics by the
+underlying model. The router deployment is configured through
+`AzureOpenAI:ModelRouterDeployment`.
+
+`infra/main.bicep` contains the fixed assignments, exact model versions, router
+pool, and capacity. The defaults were verified against the Australia East
+catalog. Check availability and quota before deploying to another region.
 
 ## How agents are registered with Foundry
 
@@ -258,6 +274,8 @@ azd hooks run postdeploy
 * [Microsoft OpenTelemetry Distro][ms-otel]
 * [OpenTelemetry generative AI semantic conventions][semconv]
 * [Agents (preview) in Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/agents-view)
+* [Use model router for Microsoft Foundry](https://learn.microsoft.com/azure/foundry/openai/how-to/model-router)
+* [Monitor model router](https://learn.microsoft.com/azure/foundry/openai/how-to/monitor-model-router)
 * [Register external agents for observability and evaluation](https://learn.microsoft.com/azure/ai-foundry/agents/how-to/register-external-agent)
 * [Customize azd workflows using command and event hooks](https://learn.microsoft.com/azure/developer/azure-developer-cli/azd-extensibility)
 * [Build agentic web applications on Azure App Service](https://learn.microsoft.com/azure/app-service/scenario-ai-agentic-web-apps)
