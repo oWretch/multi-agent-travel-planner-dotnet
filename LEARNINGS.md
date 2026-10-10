@@ -5,23 +5,51 @@ Microsoft Foundry's trace UI, and Azure billing data. These notes record what
 the application emits today, what Microsoft documents, and where the platform
 behavior is still an implementation detail.
 
-## Current trace shape
+## Expected multi-agent trace shape
 
 ASP.NET Core instrumentation creates the root span for each request:
 
 ```text
-POST /api/chat
+POST /api/chat [HTTP server]
 └── invoke_agent Coordinator
+    ├── chat Coordinator [one model inference]
+    │   └── POST /openai/responses [HTTP client transport]
+    │
     ├── execute_tool WeatherAdvisor
     │   └── invoke_agent WeatherAdvisor
-    ├── execute_tool CurrencyConverter
-    │   └── invoke_agent CurrencyConverter
-    └── ...
+    │       ├── chat WeatherAdvisor
+    │       │   └── POST /openai/responses [HTTP client transport]
+    │       └── execute_tool get_weather_forecast
+    │
+    ├── execute_tool RemoteResponsesAgent
+    │   └── POST /v1/responses [HTTP client transport]
+    │       └── HTTP server span at the remote agent
+    │           └── invoke_agent RemoteResponsesAgent
+    │               └── chat RemoteResponsesAgent
+    │
+    └── execute_tool RemoteA2AAgent
+        └── POST /message [A2A HTTP transport]
+            └── HTTP server span at the A2A agent
+                └── invoke_agent RemoteA2AAgent
+                    └── chat RemoteA2AAgent
 ```
 
-Keeping the HTTP span is useful. It records request latency, status codes, and
-failures that happen before an agent runs. It also keeps the complete request
-waterfall in one trace.
+The exact transport route depends on the protocol. A local agent has a
+`chat` span around one model request and an HTTP client span for the call to the
+model endpoint. A remote Responses API agent adds the outbound Responses API
+transport and the receiving server span. An A2A agent has the equivalent A2A
+message transport. The remote agent's `invoke_agent` and `chat` spans belong
+under the receiving service's server span when normal W3C context propagation
+is used.
+
+Keeping the HTTP spans is useful. They record request latency, status codes,
+and failures that happen before an agent runs. They also show whether a delay
+belongs to the agent operation or to the network and remote service.
+
+The `invoke_agent` span represents the agent run and may contain several model
+calls and tool calls. Each `chat` span represents one model inference. Token
+usage on `invoke_agent` is a run-level rollup. Token usage on `chat` is
+per-inference usage.
 
 ## What Application Insights contains
 
@@ -115,6 +143,90 @@ If the application calculates an estimate, retain the actual
 `POST /api/chat` root when a request uses several models. A root-level estimate
 should be the sum of the model-specific child estimates and should not be
 presented as billed cost.
+
+## Pricing belongs in the backend
+
+Foundry is not unusual in what it asks the application to emit. Other
+observability backends take the same input and do the arithmetic themselves.
+Datadog documents the mechanism: it calculates LLM cost automatically when a
+span carries input tokens, output tokens, and a model name it recognises, and
+it accepts a caller-supplied total cost value when the model is custom or the
+rate is negotiated.
+
+That reframes the finding above. The sample is not missing instrumentation. It
+already emits what a pricing backend needs, and Foundry simply does not apply a
+price to these custom `invoke_agent` spans today. The same spans sent to a
+backend that maintains a pricing table would produce a dollar figure with no
+application change.
+
+The rule worth stating on stage is to keep prices out of agent code. A rate
+depends on model, region, deployment type, pricing mode, cached-token
+treatment, and contract, and any table compiled into the application goes stale
+without failing. If a per-trace estimate is required, calculate it in one place,
+label it an estimate, and keep `gen_ai.response.model` on the span so the number
+can be recomputed when prices change.
+
+## What makes a span priceable
+
+A model name on its own is ambiguous. The same string can be served by Azure,
+by the provider directly, or through a reseller at three different rates. The
+semantic conventions pair the model with `gen_ai.provider.name`, which
+identifies the system fulfilling the request, using values such as
+`azure.ai.inference`, `openai`, and `aws.bedrock`.
+
+Both were checked against the deployed resource on 10 October 2026. The
+`invoke_agent` spans carry `gen_ai.agent.name`, `gen_ai.agent.id`, and
+`gen_ai.provider.name`, so a backend can group cost per agent as well as per
+model.
+
+The provider value is `openai`, not `azure.ai.openai`. The models are served by
+Azure OpenAI, so the instrumentation is reporting the SDK flavour rather than
+the hosting platform. The conventions do allow this: the attribute is set from
+the instrumentation's best knowledge and is documented as possibly differing
+from the actual upstream provider. It still matters for pricing, because Azure
+and OpenAI publish different rates for the same model name, and a backend that
+keys its price table on the provider will pick the wrong column.
+
+Treat the attribute lists as moving targets. The generative AI conventions are
+still in development status, they have moved to a separate
+`semantic-conventions-genai` repository, and the agent portions change between
+releases, so pin to a version rather than quoting an attribute list as settled.
+
+## Where token usage belongs
+
+`invoke_agent` is not a `chat` span. `gen_ai.operation.name` is an enumeration,
+and `chat` and `invoke_agent` are separate values describing different
+operations. Both are client spans, which is the likely source of the confusion,
+but a `chat` span covers exactly one inference request, while an `invoke_agent`
+span covers a whole agent run that may contain several model calls and several
+tool calls.
+
+Token usage is legitimate on both. `gen_ai.usage.input_tokens` and
+`gen_ai.usage.output_tokens` are listed as recommended attributes on the invoke
+agent span as well as on inference spans. On an agent span the numbers are a
+rollup for the run. On a `chat` span they describe a single call.
+
+Before the inference layer was instrumented, this sample emitted usage only on
+`invoke_agent`. That was spec-conformant but lost per-call resolution. The
+`IChatClient` pipeline now applies `UseOpenTelemetry` before
+`AsAIAgent(options)`, so each model request can emit its own `chat` span under
+the corresponding `invoke_agent` span. The existing agent-level wrapper remains
+in place for the run-level span and its rollup.
+
+## Reading cost attribution from the span tree
+
+Separate `execute_tool` and `invoke_agent` spans make it possible to tell where
+tokens are actually going. The trace recorded above shows the pattern clearly:
+the coordinator consumed 8,708 input tokens while each specialist consumed
+between 303 and 436. Nearly all input cost sits in the coordinator's context,
+not in the specialists.
+
+That shape is the signature of context accumulation in the orchestrator, and it
+points at a different fix than a specialist that loops and burns output tokens.
+`ItineraryPlanner` is the contrast case in the same trace: 303 tokens in, 3,591
+out. One problem is solved by trimming what the coordinator carries forward,
+the other by constraining a specialist's generation. A single total token count
+on the root span hides both.
 
 ## Root token totals
 
@@ -364,3 +476,6 @@ rather than trying to encode two parents in the standard OpenTelemetry headers.
 - [Adding distributed tracing instrumentation: links](https://learn.microsoft.com/dotnet/core/diagnostics/distributed-tracing-instrumentation-walkthroughs#optional-links)
 - [ActivityLink class](https://learn.microsoft.com/dotnet/api/system.diagnostics.activitylink)
 - [W3C Trace Context](https://www.w3.org/TR/trace-context/)
+- [OpenTelemetry generative AI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai)
+- [Semantic conventions for GenAI agent and framework spans](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md)
+- [Datadog LLM Observability cost tracking](https://docs.datadoghq.com/llm_observability/investigate/cost/)

@@ -2,17 +2,20 @@ using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using MultiAgentTravelPlanner.Tools;
-using OpenAI.Chat;
 using OpenAI.Responses;
 
 namespace MultiAgentTravelPlanner.Agents;
 
 /// <summary>
-/// Builds the coordinator and the specialized agents. Each AIAgent is wrapped
-/// with <c>UseOpenTelemetry</c> so its runs emit the OpenTelemetry GenAI
-/// semantic-convention spans (<c>gen_ai.agent.name</c>, <c>gen_ai.agent.id</c>,
-/// <c>gen_ai.usage.*</c>) that the App Service Agents tab and the
-/// Application Insights Agents (preview) view group on.
+/// Builds the coordinator and the specialized agents.
+///
+/// Telemetry is applied at two layers. Each AIAgent is wrapped with
+/// <c>UseOpenTelemetry</c> so its runs emit <c>invoke_agent</c> spans carrying
+/// <c>gen_ai.agent.name</c>, <c>gen_ai.agent.id</c>, and a per-run
+/// <c>gen_ai.usage.*</c> rollup, which is what the App Service Agents tab and
+/// the Application Insights Agents (preview) view group on. The IChatClient
+/// underneath each agent is wrapped as well, so every individual model call
+/// emits its own <c>chat</c> span.
 /// </summary>
 public sealed class AgentCatalog
 {
@@ -168,17 +171,32 @@ public sealed class AgentCatalog
 #pragma warning restore OPENAI001
         }
 
-        if (!useResponsesApi)
+        IChatClient chatClient;
+        if (useResponsesApi)
         {
-            ChatClient chat = client.GetChatClient(deployment);
-            return chat.AsAIAgent(options);
+#pragma warning disable OPENAI001
+            chatClient = client.GetResponsesClient().AsIChatClient(deployment);
+#pragma warning restore OPENAI001
+        }
+        else
+        {
+            chatClient = client.GetChatClient(deployment).AsIChatClient();
         }
 
-#pragma warning disable OPENAI001
-        var responses = client.GetResponsesClient();
-#pragma warning restore OPENAI001
-        return responses.AsAIAgent(options, deployment);
+        return WithTelemetry(chatClient).AsAIAgent(options);
     }
+
+    /// <summary>
+    /// Instruments the inference layer so each model call emits its own
+    /// <c>chat</c> span carrying <c>gen_ai.usage.*</c> for that single call.
+    /// Without this the agent span reports only a per-run token rollup.
+    /// </summary>
+    private static IChatClient WithTelemetry(IChatClient chatClient) =>
+        chatClient.AsBuilder()
+            .UseOpenTelemetry(
+                sourceName: TelemetrySourceName,
+                configure: otel => otel.EnableSensitiveData = true)
+            .Build();
 
     private static AIAgent WithTelemetry(AIAgent agent) =>
         agent.AsBuilder()
