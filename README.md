@@ -41,7 +41,7 @@ sibling Azure-Samples repos.
   easy to explain and observe.
 * An API Management AI gateway with W3C-correlated Application Insights
   telemetry and exact-request caching for both Responses and Chat Completions.
-* `azd up` deploys App Service plan, Linux Web App (.NET 9), API Management, Application
+* `azd up` deploys App Service plan, Linux Web App (.NET 10), API Management, Application
   Insights (workspace-based), Log Analytics workspace, and the Azure AI
   Foundry account and project in one shot.
 * Minimal chat UI with markdown rendering, a model-strategy switch, and a
@@ -67,7 +67,7 @@ After you deploy and exercise the app, two new portal experiences are populated:
   Application Insights, an Azure AI Foundry resource, and role assignments.
 * Quota for the model you deploy in your target region. See
   [Azure OpenAI quotas](https://learn.microsoft.com/azure/ai-services/openai/quotas-limits).
-* The [.NET 9 SDK](https://dotnet.microsoft.com/download).
+* The [.NET 10 SDK](https://dotnet.microsoft.com/download).
 * The [Azure Developer CLI (azd)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
   version 1.10 or later.
 

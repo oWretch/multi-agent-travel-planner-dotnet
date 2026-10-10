@@ -10,7 +10,7 @@
       "request": "launch",
       "preLaunchTask": "prepare local demo",
       // If you have changed target frameworks, make sure to update the program path.
-      "program": "${workspaceFolder}/src/MultiAgentTravelPlanner/bin/Debug/net9.0/MultiAgentTravelPlanner.dll",
+      "program": "${workspaceFolder}/src/MultiAgentTravelPlanner/bin/Debug/net10.0/MultiAgentTravelPlanner.dll",
       "args": [],
       "cwd": "${workspaceFolder}/src/MultiAgentTravelPlanner",
       "stopAtEntry": false,

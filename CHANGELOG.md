@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* Move the app, the tests and the App Service runtime from .NET 9 to .NET 10
+  (LTS), and update the test packages.
 * Replace the Azure Monitor-specific OpenTelemetry distribution with Microsoft
   OpenTelemetry while retaining Azure Monitor export.
 * Make every agent ID configurable through a stable

@@ -100,7 +100,7 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
     serverFarmId: plan.id
     httpsOnly: true
     siteConfig: {
-      linuxFxVersion: 'DOTNETCORE|9.0'
+      linuxFxVersion: 'DOTNETCORE|10.0'
       alwaysOn: true
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
