@@ -45,7 +45,8 @@ builder.Services.AddOpenTelemetry()
         .AddSource("Microsoft.Extensions.AI*")
         .AddSource("OpenAI*")
         .AddSource("Experimental.OpenAI*")
-        .AddSource("Azure.AI.OpenAI*"))
+        .AddSource("Azure.AI.OpenAI*")
+        .AddProcessor(new ConversationIdActivityProcessor()))
     .WithMetrics(m => m
         .ConfigureResource(r => r
             .AddService(serviceName: "multi-agent-travel-planner"))
@@ -170,6 +171,9 @@ app.MapPost("/api/chat", async (
     Activity.Current?.SetTag(
         "travel_planner.routing.mode",
         routingMode.ToConfigurationValue());
+    Activity.Current?.SetTag(
+        ConversationIdActivityProcessor.SessionAttributeName,
+        sessionId);
 
     var response = await coordinator.RunAsync(
         req.Message,
