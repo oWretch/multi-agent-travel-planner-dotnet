@@ -52,8 +52,8 @@ param additionalOpenAiDeployments array = [
         }
         {
           format: 'OpenAI'
-          name: 'gpt-6-astra'
-          version: '2026-09-03'
+          name: 'gpt-5.6-sol'
+          version: '2026-07-09'
         }
       ]
     }

@@ -2,6 +2,15 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "prepare local environment",
+      "type": "shell",
+      "command": "azd env get-values > \"${workspaceFolder}/.vscode/.env\"",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "build",
       "command": "dotnet",
       "type": "process",
@@ -12,6 +21,15 @@
         "/consoleloggerparameters:NoSummary;ForceNoAlign"
       ],
       "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "prepare local demo",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "prepare local environment",
+        "build"
+      ],
+      "problemMatcher": []
     },
     {
       "label": "publish",

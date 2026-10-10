@@ -31,9 +31,11 @@ sibling Azure-Samples repos.
 * Azure AI Foundry project with fixed per-agent deployments: GPT-6 Astra for
   coordination, GPT-5.6 Luna for planning, and GPT-5.4 Mini for tool-focused
   specialists.
-* Agents use the Azure OpenAI Responses API rather than Chat Completions. This
-  is required for GPT-6 Astra when function tools are combined with reasoning
-  and also gives the model-router path the same tool-compatible client.
+* Fixed-model agents use the Azure OpenAI Responses API. This is required for
+  GPT-6 Astra when function tools are combined with reasoning.
+* The model-router catalog uses Chat Completions because the current Foundry
+  model-router deployment does not support Responses. Its pool excludes GPT-6
+  Astra and uses GPT-5.6 Sol as its high-capability tier.
 * A Balanced `model-router` deployment can replace the fixed assignments for
   any chat. Its pool is limited to the same three model tiers so routing stays
   easy to explain and observe.
@@ -98,6 +100,23 @@ azd down --purge
 
 ### Run locally
 
+Sign in and select the same `azd` environment used for deployment:
+
+```bash
+az login
+azd env select aiengday
+```
+
+In VS Code, run the **.NET Core Launch (web)** debug configuration. Its
+pre-launch task exports the selected `azd` environment to the ignored
+`.vscode/.env` file, builds the app, and opens the browser when the server is
+ready. The launch profile restricts `DefaultAzureCredential` to developer
+credentials locally, so the active Azure CLI login is used without probing the
+App Service managed identity endpoint.
+
+To run without VS Code, either export the `azd` values into the shell or use
+user secrets:
+
 ```bash
 cd src/MultiAgentTravelPlanner
 dotnet user-secrets set "AzureOpenAI:Endpoint" "https://<your-foundry>.openai.azure.com/"
@@ -114,11 +133,12 @@ dotnet run
 ```
 
 The app uses [`DefaultAzureCredential`][dac], so signing in with `az login` is
-enough and no API keys are required. For local traces to appear in Foundry, use
-the connection string of the Application Insights resource connected to that
-Foundry project. These deployment names must already exist in the account.
-Per-agent settings are optional, and agents without an override use
-`AzureOpenAI:Deployment`.
+enough and no API keys are required. Local runs skip managed identity and use
+the developer credential chain; App Service retains managed identity. For local
+traces to appear in Foundry, use the connection string of the Application
+Insights resource connected to that Foundry project. These deployment names
+must already exist in the account. Per-agent settings are optional, and agents
+without an override use `AzureOpenAI:Deployment`.
 
 ## Demo
 
@@ -221,7 +241,11 @@ deployment. The deployment uses Balanced mode and can select from:
 
 * `gpt-5.4-mini` for simple or latency-sensitive work.
 * `gpt-5.6-luna` for planning and synthesis.
-* `gpt-6-astra` for difficult orchestration requests.
+* `gpt-5.6-sol` for difficult orchestration and complex tool use.
+
+The router intentionally excludes `gpt-6-astra`: model-router currently uses
+Chat Completions, while GPT-6 Astra requires Responses when reasoning and
+function tools are combined.
 
 The response model recorded by OpenTelemetry shows which underlying model
 served each request. Azure Monitor can also split model-router metrics by the
@@ -232,10 +256,11 @@ underlying model. The router deployment is configured through
 pool, and capacity. The defaults were verified against the Australia East
 catalog. Check availability and quota before deploying to another region.
 
-The application currently uses `Azure.AI.OpenAI` `2.9.0-beta.1` because the
-Responses client is not available in the earlier stable package used by this
-sample. The Responses client is marked experimental by the OpenAI SDK, so the
-small, localized compiler warning suppression in `AgentCatalog` is intentional.
+The fixed-model catalog currently uses `Azure.AI.OpenAI` `2.9.0-beta.1`
+because the Responses client is not available in the earlier stable package
+used by this sample. The Responses client is marked experimental by the OpenAI
+SDK, so the small, localized compiler warning suppression in `AgentCatalog` is
+intentional.
 
 ## How agents are registered with Foundry
 

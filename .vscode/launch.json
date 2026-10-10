@@ -8,7 +8,7 @@
       "name": ".NET Core Launch (web)",
       "type": "coreclr",
       "request": "launch",
-      "preLaunchTask": "build",
+      "preLaunchTask": "prepare local demo",
       // If you have changed target frameworks, make sure to update the program path.
       "program": "${workspaceFolder}/src/MultiAgentTravelPlanner/bin/Debug/net9.0/MultiAgentTravelPlanner.dll",
       "args": [],
@@ -20,8 +20,10 @@
         "pattern": "\\bNow listening on:\\s+(https?://\\S+)"
       },
       "env": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "AZURE_TOKEN_CREDENTIALS": "dev"
       },
+      "envFile": "${workspaceFolder}/.vscode/.env",
       "sourceFileMap": {
         "/Views": "${workspaceFolder}/Views"
       }

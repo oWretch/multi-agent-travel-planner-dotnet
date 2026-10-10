@@ -61,17 +61,32 @@ builder.UseMicrosoftOpenTelemetry(options =>
 // (managed identity, no keys)
 // ---------------------------------------------------------------------------
 
-var aoaiEndpoint = builder.Configuration["AzureOpenAI:Endpoint"]
-    ?? throw new InvalidOperationException("AzureOpenAI:Endpoint is required.");
-var aoaiDeployment = builder.Configuration["AzureOpenAI:Deployment"]
-    ?? throw new InvalidOperationException("AzureOpenAI:Deployment is required.");
-var modelRouterDeployment = builder.Configuration["AzureOpenAI:ModelRouterDeployment"]
-    ?? throw new InvalidOperationException(
-        "AzureOpenAI:ModelRouterDeployment is required.");
+var aoaiEndpoint = GetRequiredSetting(
+    builder.Configuration,
+    "AzureOpenAI:Endpoint",
+    "AZURE_OPENAI_ENDPOINT");
+var aoaiDeployment = GetRequiredSetting(
+    builder.Configuration,
+    "AzureOpenAI:Deployment",
+    "AZURE_OPENAI_DEPLOYMENT");
+var modelRouterDeployment = GetRequiredSetting(
+    builder.Configuration,
+    "AzureOpenAI:ModelRouterDeployment",
+    "AZURE_OPENAI_MODEL_ROUTER_DEPLOYMENT");
+
+var isAzureHosted =
+    !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WEBSITE_SITE_NAME"))
+    || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT"));
 
 builder.Services.AddSingleton(new AzureOpenAIClient(
     new Uri(aoaiEndpoint),
-    new DefaultAzureCredential()));
+    new DefaultAzureCredential(new DefaultAzureCredentialOptions
+    {
+        // App Service uses managed identity. Local development skips the
+        // unavailable IMDS endpoint and continues through developer credentials,
+        // including the active Azure CLI login.
+        ExcludeManagedIdentityCredential = !isAzureHosted,
+    })));
 
 // ---------------------------------------------------------------------------
 // Agents
@@ -159,3 +174,20 @@ app.MapPost("/api/chat", async (
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
 
 app.Run();
+
+static string GetRequiredSetting(
+    IConfiguration configuration,
+    string configurationKey,
+    string environmentVariable)
+{
+    var value = configuration[configurationKey];
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        value = Environment.GetEnvironmentVariable(environmentVariable);
+    }
+
+    return string.IsNullOrWhiteSpace(value)
+        ? throw new InvalidOperationException(
+            $"{configurationKey} or {environmentVariable} is required.")
+        : value;
+}

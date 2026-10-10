@@ -24,6 +24,11 @@
   fixed assignments and adaptive model routing.
 * Move agent requests from Chat Completions to the Azure OpenAI Responses API
   so GPT-6 Astra can use reasoning and function tools together.
+* Configure local VS Code launches from the selected `azd` environment and use
+  the `DefaultAzureCredential` developer chain locally while retaining managed
+  identity in App Service.
+* Keep model-router on Chat Completions and replace GPT-6 Astra in its pool
+  with GPT-5.6 Sol, since the router does not currently support Responses.
 
 <a name="0.1.0"></a>
 # 0.1.0 (2026-05-14)
