@@ -39,17 +39,55 @@ if ([string]::IsNullOrWhiteSpace($agentIds)) {
 
 $projectEndpoint = $projectEndpoint.TrimEnd('/')
 
-$token = (azd auth token --scope $tokenScope --output json | ConvertFrom-Json).token
-if ([string]::IsNullOrWhiteSpace($token)) {
-    throw "Could not acquire a token for $tokenScope. Run 'azd auth login'."
+function Get-Token([string] $Scope) {
+    $value = (azd auth token --scope $Scope --output json | ConvertFrom-Json).token
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "Could not acquire a token for $Scope. Run 'azd auth login'."
+    }
+    return $value
+}
+
+function Get-StatusCode($ErrorRecord) {
+    $responseProperty = $ErrorRecord.Exception.PSObject.Properties['Response']
+    if ($responseProperty -and $responseProperty.Value) {
+        return $responseProperty.Value.StatusCode
+    }
+    return $null
 }
 
 $headers = @{
-    Authorization     = "Bearer $token"
+    Authorization      = "Bearer $(Get-Token $tokenScope)"
     'Foundry-Features' = $previewFeature
 }
 
+function Test-AgentService {
+    try {
+        Invoke-RestMethod -Method Get -Headers $headers `
+            -Uri "$projectEndpoint/agents`?api-version=$apiVersion" | Out-Null
+        return $null
+    }
+    catch {
+        return $_
+    }
+}
+
+$serviceError = Test-AgentService
+
 Write-Host "Registering external agents in $projectEndpoint"
+
+if ($serviceError) {
+    $status = Get-StatusCode $serviceError
+    $guidance = switch ($status) {
+        ([System.Net.HttpStatusCode]::NotFound) {
+            'The Agent Service did not recognize the project for this identity. Some identities, such as personal Microsoft accounts invited as guests, get this even with the Foundry User role.'
+        }
+        { $_ -in [System.Net.HttpStatusCode]::Unauthorized, [System.Net.HttpStatusCode]::Forbidden } {
+            'Check the signed-in azd identity and its Foundry User role on the project.'
+        }
+        default { 'Check the HTTP error below.' }
+    }
+    throw "Foundry Agent Service is unavailable at $projectEndpoint (${status}). $guidance $($serviceError.Exception.Message) $($serviceError.ErrorDetails)"
+}
 
 $failures = 0
 
@@ -76,7 +114,6 @@ foreach ($agentId in $agentIds.Split(',', [StringSplitOptions]::RemoveEmptyEntri
     }
 
     $body = @{
-        name        = $agentId
         description = $description
         definition  = @{
             kind          = 'external'
@@ -86,7 +123,7 @@ foreach ($agentId in $agentIds.Split(',', [StringSplitOptions]::RemoveEmptyEntri
 
     try {
         Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/json' `
-            -Uri "$projectEndpoint/agents`?api-version=$apiVersion" -Body $body | Out-Null
+            -Uri "$projectEndpoint/agents/$agentId/versions`?api-version=$apiVersion" -Body $body | Out-Null
         Write-Host "  ${agentId}: registered"
     }
     catch {
@@ -96,7 +133,7 @@ foreach ($agentId in $agentIds.Split(',', [StringSplitOptions]::RemoveEmptyEntri
 }
 
 if ($failures -gt 0) {
-    throw "$failures agent registration(s) failed. External agents are a Foundry preview feature and need the Foundry User role on the project."
+    throw "$failures agent registration(s) failed. See the HTTP errors above. External agent creation requires the ExternalAgents preview feature and the Foundry User role on the project."
 }
 
 Write-Host 'All agents are registered. Open the project in https://ai.azure.com and select Agents to view traces.'

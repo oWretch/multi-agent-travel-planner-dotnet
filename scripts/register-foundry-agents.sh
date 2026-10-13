@@ -40,16 +40,46 @@ fi
 
 project_endpoint=${project_endpoint%/}
 
-token=$(azd auth token --scope "$TOKEN_SCOPE" --output json \
-  | tr -d '\n' \
-  | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+get_token() {
+  azd auth token --scope "$1" --output json \
+    | tr -d '\n' \
+    | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+token=$(get_token "$TOKEN_SCOPE")
 
 if [ -z "$token" ]; then
   echo "Could not acquire a token for $TOKEN_SCOPE. Run 'azd auth login'." >&2
   exit 1
 fi
 
+auth_header="Authorization: Bearer $token"
+
+list_agents() {
+  curl -sS -w '\n%{http_code}' \
+    "$project_endpoint/agents?api-version=$API_VERSION" \
+    -H "$auth_header" \
+    -H "Foundry-Features: $PREVIEW_FEATURE"
+}
+
+response=$(list_agents)
+status=$(printf '%s' "$response" | tail -n 1)
+
 echo "Registering external agents in $project_endpoint"
+
+if [ "$status" != '200' ]; then
+  echo "Foundry Agent Service is unavailable at $project_endpoint (HTTP $status)." >&2
+  printf '%s\n' "$response" | sed '$d' >&2
+  case "$status" in
+    404)
+      echo "The Agent Service did not recognize the project for this identity. Some identities, such as personal Microsoft accounts invited as guests, get this even with the Foundry User role." >&2
+      ;;
+    401|403)
+      echo "Check the signed-in azd identity and its Foundry User role on the project." >&2
+      ;;
+  esac
+  exit 1
+fi
 
 failures=0
 original_ifs=$IFS
@@ -59,7 +89,7 @@ for agent_id in $agent_ids; do
 
   status=$(curl -sS -o /dev/null -w '%{http_code}' \
     "$project_endpoint/agents/$agent_id?api-version=$API_VERSION" \
-    -H "Authorization: Bearer $token" \
+    -H "$auth_header" \
     -H "Foundry-Features: $PREVIEW_FEATURE")
 
   if [ "$status" = '200' ]; then
@@ -75,12 +105,12 @@ for agent_id in $agent_ids; do
     continue
   fi
 
-  body=$(printf '{"name":"%s","description":"%s","definition":{"kind":"external","otel_agent_id":"%s"}}' \
-    "$agent_id" "$DESCRIPTION" "$agent_id")
+  body=$(printf '{"description":"%s","definition":{"kind":"external","otel_agent_id":"%s"}}' \
+    "$DESCRIPTION" "$agent_id")
 
   response=$(curl -sS -w '\n%{http_code}' \
-    -X POST "$project_endpoint/agents?api-version=$API_VERSION" \
-    -H "Authorization: Bearer $token" \
+    -X POST "$project_endpoint/agents/$agent_id/versions?api-version=$API_VERSION" \
+    -H "$auth_header" \
     -H "Foundry-Features: $PREVIEW_FEATURE" \
     -H 'Content-Type: application/json' \
     -d "$body")
@@ -103,7 +133,7 @@ done
 IFS=$original_ifs
 
 if [ "$failures" -gt 0 ]; then
-  echo "$failures agent registration(s) failed. External agents are a Foundry preview feature and need the Foundry User role on the project." >&2
+  echo "$failures agent registration(s) failed. See the HTTP errors above. External agent creation requires the ExternalAgents preview feature and the Foundry User role on the project." >&2
   exit 1
 fi
 

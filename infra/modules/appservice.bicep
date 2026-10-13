@@ -59,10 +59,6 @@ var baseAppSettings = [
     value: modelRouterDeployment
   }
   {
-    name: 'AIGateway__UseStatelessResponses'
-    value: 'true'
-  }
-  {
     name: 'ASPNETCORE_ENVIRONMENT'
     value: 'Production'
   }

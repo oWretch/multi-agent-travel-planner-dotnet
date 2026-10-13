@@ -39,9 +39,7 @@ sibling Azure-Samples repos.
 * A Balanced `model-router` deployment can replace the fixed assignments for
   any chat. Its pool is limited to the same three model tiers so routing stays
   easy to explain and observe.
-* An API Management AI gateway with W3C-correlated Application Insights
-  telemetry and exact-request caching for both Responses and Chat Completions.
-* `azd up` deploys App Service plan, Linux Web App (.NET 10), API Management, Application
+* `azd up` deploys App Service plan, Linux Web App (.NET 10), Application
   Insights (workspace-based), Log Analytics workspace, and the Azure AI
   Foundry account and project in one shot.
 * Minimal chat UI with markdown rendering, a model-strategy switch, and a
@@ -63,7 +61,7 @@ After you deploy and exercise the app, two new portal experiences are populated:
 
 ### Prerequisites
 
-* An Azure subscription with permissions to create App Service, API Management,
+* An Azure subscription with permissions to create App Service,
   Application Insights, an Azure AI Foundry resource, and role assignments.
 * Quota for the model you deploy in your target region. See
   [Azure OpenAI quotas](https://learn.microsoft.com/azure/ai-services/openai/quotas-limits).
@@ -82,9 +80,7 @@ azd env new travel-demo
 azd up
 ```
 
-`azd` will prompt for a subscription, region, and APIM publisher contact email.
-It saves the email in the environment's configuration and reuses it on later
-provisions. `AZURE_PRINCIPAL_ID` is populated automatically from the signed-in
+`azd` will prompt for a subscription and region. `AZURE_PRINCIPAL_ID` is populated automatically from the signed-in
 `azd` identity; use the same identity for local testing.
 After deployment completes, follow the printed URL to chat with the agents. Send a few messages
 (for example, *"Plan a 4-day trip to Lisbon in July for two on a midrange
@@ -99,24 +95,22 @@ budget"*), then open the portal:
 3. In the App Service resource, select **AI (preview)** → **Agents** and click
    **View in Application Insights** to drill into the Agents (preview) view.
 
-API Management uses the Developer tier with a built-in volatile cache. It has
-a standing cost and no production SLA. Initial provisioning can take
-30 minutes or longer.
-
 For an existing environment, run `azd provision` followed by `azd deploy`.
-Provisioning prompts for the publisher email if it has not been configured.
-To supply it ahead of time, including for CI, run:
+
+The postdeploy hook registers the agents with the Foundry Agent Service using
+the signed-in `azd` identity. Registration is safe to repeat and doesn't
+require redeploying the app:
 
 ```bash
-azd env config set infra.parameters.apiManagementPublisherEmail "<publisher-contact-email>"
+sh ./scripts/register-foundry-agents.sh
 ```
 
-Deployment alone cannot create the gateway. The `predeploy` hook
-sets the App Service model endpoint and stateless Responses setting from the
-provisioning outputs, and refreshes the ignored `.vscode/.env` for local runs.
-The hook fails if those outputs are missing rather than deploying with a
-stale direct-model endpoint. Both `az login` and `azd auth login` are required
-because the settings hook uses Azure CLI and agent registration uses `azd`.
+On Windows, run `./scripts/register-foundry-agents.ps1` instead. HTTP 401 or
+403 indicates an authentication or permission issue; check the signed-in `azd`
+identity and its **Foundry User** role on the project. The Agent Service
+returns HTTP 404 `Project not found` for some identities, such as a personal
+Microsoft account invited to the tenant as a guest, even when they have the
+**Foundry User** role.
 
 To tear everything down:
 
@@ -146,7 +140,6 @@ user secrets:
 ```bash
 cd src/MultiAgentTravelPlanner
 dotnet user-secrets set "AzureOpenAI:Endpoint" "$(azd env get-value AZURE_OPENAI_ENDPOINT)"
-dotnet user-secrets set "AIGateway:UseStatelessResponses" "true"
 dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-6-astra"
 dotnet user-secrets set "AzureOpenAI:ModelRouterDeployment" "model-router"
 dotnet user-secrets set "Agents:Coordinator:Deployment" "gpt-6-astra"
@@ -167,14 +160,6 @@ Insights resource connected to that Foundry project. These deployment names
 must already exist in the account. Per-agent settings are optional, and agents
 without an override use `AzureOpenAI:Deployment`.
 
-The gateway allows only the web app's managed identity and the developer
-specified by `AZURE_PRINCIPAL_ID`. A different local login receives a 401.
-Existing `AzureOpenAI:Endpoint` user secrets take precedence over the
-`AZURE_OPENAI_ENDPOINT` output, so update or remove a secret that still points
-directly to Foundry. To intentionally bypass APIM, use
-`AZURE_OPENAI_BACKEND_ENDPOINT` and set `AIGateway:UseStatelessResponses` to
-`false`.
-
 ## Demo
 
 The walkthrough that accompanies this sample is the Microsoft Learn tutorial
@@ -187,13 +172,11 @@ troubleshooting.
 ```
 .
 ├── azure.yaml                        # azd config (App Service host, postdeploy hook)
-├── infra/                            # Bicep: APIM, App Service plan, Web App,
+├── infra/                            # Bicep: App Service plan, Web App,
 │   ├── main.bicep                    #   App Insights, Azure AI Foundry account + project
 │   ├── main.parameters.json
 │   └── modules/
 ├── scripts/
-│   ├── configure-deployment.sh      # App Service settings + local environment (POSIX)
-│   ├── configure-deployment.ps1     # App Service settings + local environment (Windows)
 │   ├── register-foundry-agents.sh    # Registers the agents with Foundry (POSIX)
 │   └── register-foundry-agents.ps1   # Registers the agents with Foundry (Windows)
 ├── src/MultiAgentTravelPlanner/
@@ -229,13 +212,6 @@ troubleshooting.
    `.AddSource(AgentCatalog.TelemetrySourceName)` and to the OpenAI /
    Extensions.AI sources for the underlying chat-completion spans.
 
-`Observability/AIGatewayTelemetryHandler.cs` also creates an
-`ai_gateway.request` client span per HTTP attempt. It sends agent name and
-routing mode headers to APIM and records the returned cache status on that
-span. The normal HTTP instrumentation propagates W3C trace context to APIM,
-whose request, backend dependency, and cache-policy logs go to the same
-Application Insights resource.
-
 Each agent has a stable logical name and reads its effective ID from
 `Agents:<LogicalName>:Id`. The logical name is the default. The `agents` list in
 `infra/main.bicep` holds those names and drives two things: one App Service
@@ -254,71 +230,6 @@ registration hook consumes. Keep it in sync with
 
 IDs must be nonempty, unique, and stable across restarts. The app validates
 these requirements at startup.
-
-## AI gateway and caching
-
-Both agent catalogs call APIM using the existing Azure OpenAI SDK and Entra
-credentials. APIM validates the tenant, Cognitive Services audience, and
-allowed caller object IDs before checking the cache. It authenticates to
-Foundry with its own managed identity, which has the Cognitive Services
-OpenAI User role. No subscription keys or model API keys are required.
-
-`infra/modules/policies/ai-gateway.xml` uses `cache-lookup-value` and
-`cache-store-value` to cache the JSON response to identical POST requests.
-The SHA-256 cache key covers the full body, URL (including deployment and API
-version), caller identity, agent name, and routing mode. System instructions,
-tools, history, and generation settings therefore remain part of the key.
-This is exact matching, not semantic caching; it needs neither Redis nor an
-embedding model. Cache entries last 600 seconds by default. Set
-`aiGatewayCacheDurationSeconds` in Bicep to change that, or to zero to disable
-caching. Cache writes are asynchronous, and APIM can evict entries before
-their TTL expires.
-
-Fixed-model agents set `store: false` and request
-`reasoning.encrypted_content`. Agent Framework keeps conversation history
-in memory and sends it with subsequent requests, including tool results and
-encrypted reasoning. Reusing a cached response ID cannot extend another
-conversation on the model service. The policy bypasses streaming,
-background work, stored Responses, and requests with a server-side
-conversation or previous-response ID. It stores only successful JSON
-responses, and Responses must have `status: completed` and `store: false`.
-Tool calls returned from cache still execute in the app; the cache skips
-model inference, not tools or agent orchestration.
-
-To demonstrate it, send a prompt, wait for the reply, then select **+ New
-chat** and send exactly the same prompt in the same routing mode. For example,
-ask "Ask ItineraryPlanner for a three-day Lisbon itinerary." Try both
-**Fixed models** and **Model router**. First requests should show a miss;
-identical requests within the cache lifetime can show a hit. A follow-up in
-the same conversation includes history and normally has a different key.
-
-In the end-to-end trace, look for `ai_gateway.request`:
-
-| Attribute | Meaning |
-|-----------|---------|
-| `ai.gateway.cache.status = hit` | APIM returned a cached response |
-| `ai.gateway.backend.request = false` | This attempt did not call the model |
-| `ai.gateway.cache.status = miss` | An eligible request was not in the cache |
-| `ai.gateway.cache.status = bypass` | The request was not eligible for caching |
-
-APIM also emits `ai-gateway-cache` trace messages with these properties.
-A hit has no APIM-to-model dependency. APIM diagnostics use W3C correlation,
-100% request sampling, and information-level policy traces for the demo.
-They record cache-status and agent headers, but not request or response
-bodies or authorization headers.
-
-```kusto
-traces
-| where tostring(customDimensions["ai.gateway.cache.status"]) == "hit"
-| project timestamp, operation_Id, message,
-    agent = tostring(customDimensions["gen_ai.agent.name"])
-```
-
-Cached JSON retains the original model usage fields, so SDK GenAI token
-counters describe the response being replayed, not newly billed inference.
-Use the gateway cache status and backend dependencies to distinguish actual
-model calls. Provider prompt-cache token metrics are separate from this
-whole-response gateway cache.
 
 ## Model strategies
 

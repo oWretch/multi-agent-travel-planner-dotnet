@@ -156,21 +156,6 @@ public sealed class AgentCatalog
             },
         };
 
-        var useStatelessResponses =
-            configuration.GetValue<bool?>("AIGateway:UseStatelessResponses")
-            ?? configuration.GetValue<bool>("AZURE_AI_GATEWAY_STATELESS_RESPONSES");
-        if (useResponsesApi && useStatelessResponses)
-        {
-            // Local history prevents cached response IDs from becoming server-side continuations.
-#pragma warning disable OPENAI001
-            options.ChatOptions.RawRepresentationFactory = _ => new CreateResponseOptions
-            {
-                StoredOutputEnabled = false,
-                IncludedProperties = { "reasoning.encrypted_content" },
-            };
-#pragma warning restore OPENAI001
-        }
-
         IChatClient chatClient;
         if (useResponsesApi)
         {

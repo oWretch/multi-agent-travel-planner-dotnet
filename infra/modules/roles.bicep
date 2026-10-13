@@ -1,6 +1,5 @@
 param openAiAccountName string
 param webAppPrincipalId string
-param gatewayPrincipalId string
 @description('Optional. Principal ID of the developer running locally. Empty string skips the user role assignment.')
 param userPrincipalId string = ''
 
@@ -16,16 +15,6 @@ resource webAppRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(account.id, webAppPrincipalId, openAiUserRoleId)
   properties: {
     principalId: webAppPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', openAiUserRoleId)
-  }
-}
-
-resource gatewayRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: account
-  name: guid(account.id, gatewayPrincipalId, openAiUserRoleId)
-  properties: {
-    principalId: gatewayPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', openAiUserRoleId)
   }
