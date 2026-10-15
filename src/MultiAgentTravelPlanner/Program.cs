@@ -44,7 +44,9 @@ builder.Services.AddOpenTelemetry()
         .AddSource("OpenAI*")
         .AddSource("Experimental.OpenAI*")
         .AddSource("Azure.AI.OpenAI*")
-        .AddProcessor(new ConversationIdActivityProcessor()))
+        .AddProcessor(new ConversationIdActivityProcessor())
+        .AddProcessor(new GenAiSpanEventProcessor(
+            builder.Configuration.GetValue<bool>("Telemetry:CaptureSensitiveData"))))
     .WithMetrics(m => m
         .ConfigureResource(r => r
             .AddService(serviceName: "multi-agent-travel-planner"))

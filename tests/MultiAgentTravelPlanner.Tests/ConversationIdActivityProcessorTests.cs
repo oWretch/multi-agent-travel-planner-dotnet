@@ -66,4 +66,39 @@ public sealed class ConversationIdActivityProcessorTests
             child.GetTagItem(
                 ConversationIdActivityProcessor.ConversationAttributeName));
     }
+
+    [Fact]
+    public void OnEnd_CorrelatesModelAndToolSpansWithNearestAgent()
+    {
+        using var coordinator = new Activity("Coordinator").Start();
+        coordinator.SetTag("gen_ai.agent.id", "Coordinator");
+        coordinator.SetTag("gen_ai.agent.name", "Coordinator");
+        using var specialist = new Activity("WeatherAdvisor").Start();
+        specialist.SetTag("gen_ai.agent.id", "WeatherAdvisor");
+        specialist.SetTag("gen_ai.agent.name", "WeatherAdvisor");
+        specialist.SetTag("gen_ai.agent.description", "Weather specialist");
+        using var model = new Activity("chat").Start();
+        model.SetTag("gen_ai.operation.name", "chat");
+
+        new ConversationIdActivityProcessor().OnEnd(model);
+
+        Assert.Equal("WeatherAdvisor", model.GetTagItem("gen_ai.agent.id"));
+        Assert.Equal("WeatherAdvisor", model.GetTagItem("gen_ai.agent.name"));
+        Assert.Equal("Weather specialist", model.GetTagItem("gen_ai.agent.description"));
+    }
+
+    [Fact]
+    public void OnEnd_RemovesFailedToolResultAndPreservesError()
+    {
+        using var tool = new Activity("execute_tool").Start();
+        tool.SetTag("gen_ai.operation.name", "execute_tool");
+        tool.SetTag("gen_ai.tool.call.result", "null");
+        tool.SetTag("error.type", "System.InvalidOperationException");
+        tool.SetStatus(ActivityStatusCode.Error);
+
+        new ConversationIdActivityProcessor().OnEnd(tool);
+
+        Assert.Null(tool.GetTagItem("gen_ai.tool.call.result"));
+        Assert.Equal("System.InvalidOperationException", tool.GetTagItem("error.type"));
+    }
 }

@@ -202,7 +202,9 @@ troubleshooting.
 
 1. **Wrap each agent with `UseOpenTelemetry`.** Every agent goes through a
    `WithTelemetry(...)` helper that calls
-   `agent.AsBuilder().UseOpenTelemetry(sourceName, o => o.EnableSensitiveData = true).Build()`.
+   `agent.AsBuilder().UseOpenTelemetry(...)`. The
+   `Telemetry:CaptureSensitiveData` setting controls content capture at both
+   the agent and model layers.
    This is what makes Microsoft Agent Framework emit `gen_ai.agent.name`,
    `gen_ai.agent.id`, `gen_ai.usage.*`, and tool-call spans for every agent
    run.
@@ -230,6 +232,143 @@ registration hook consumes. Keep it in sync with
 
 IDs must be nonempty, unique, and stable across restarts. The app validates
 these requirements at startup.
+
+### GenAI telemetry coverage
+
+The app follows the [GenAI attribute registry](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/registry/attributes/gen-ai.md)
+and its [inference conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/client-inference.md).
+These conventions are still in development. Microsoft.Extensions.AI provides
+the base instrumentation; `GenAiTelemetryChatClient` enriches its existing
+model spans without creating another span for the same request.
+
+| Surface | Captured attributes |
+|---------|---------------------|
+| Agent identity | `gen_ai.agent.id`, `.name`, `.description` on agent runs and their model/tool spans |
+| Model request | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `server.address`, `server.port`; sampling/token-limit settings when supplied |
+| Reasoning | `gen_ai.request.reasoning.level` when explicitly requested; `gen_ai.usage.reasoning.output_tokens` when the provider reports it |
+| Streaming | `gen_ai.request.stream`; `gen_ai.response.time_to_first_chunk` in seconds, from model request issuance to its first received chunk |
+| Model response | `gen_ai.response.id`, `.model`, `.finish_reasons`; `.status` for Responses API lifecycle events |
+| Usage | `gen_ai.usage.input_tokens`, `.output_tokens`, `.cache_read.input_tokens`; text/audio breakdowns when supplied by the SDK |
+| Context | `gen_ai.conversation.id` from the app session or a hosted provider conversation; `gen_ai.request.previous_response.id` for Responses continuations |
+| Tools | `gen_ai.tool.definitions` as JSON with function names, descriptions, and parameter schemas; `gen_ai.tool.name`, `.description`, `.type`, `.call.id` on execution spans |
+| Content (opt-in) | `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` |
+| Span events | One completion event per model call, agent run, and tool execution, with correlated metadata and opt-in content |
+| Errors | Error span status and `error.type`; failed tool executions omit results, and failed model generations without a finish reason report `error` |
+
+Reasoning and cached tokens are subsets of the provider's output and input
+totals respectively. Do not add them to those totals. Use model spans
+(`gen_ai.operation.name == "chat"`) for cost analysis: agent-run spans also
+contain token rollups, so summing both layers double-counts usage.
+
+`Telemetry:UseStreaming` defaults to `true` in the demo's `appsettings.json`.
+Every model request uses streaming, including specialist requests made through
+agent-as-tool calls. `StreamingChatClient` buffers those updates, so the
+`/api/chat` JSON response and UI stay unchanged. The SDK also emits
+`gen_ai.client.operation.time_to_first_chunk` and `gen_ai.client.operation.time_per_output_chunk`
+histograms alongside operation duration and token usage metrics. Setting
+`Telemetry__UseStreaming=false` restores buffered provider requests; those
+requests correctly omit first-chunk timing.
+
+Fixed-model agents read `Agents:<LogicalName>:ReasoningEffort`. The demo uses
+`low` for the tool-focused specialists and `medium` for the coordinator and
+planners. Supported values are `none`, `low`, `medium`, `high`, and `xhigh`;
+the telemetry value matches the string sent to OpenAI. Remove the setting to
+use the provider default, which leaves `gen_ai.request.reasoning.level` unset.
+Only configure effort levels your deployed model supports. The model-router
+catalog leaves effort to the provider rather than applying fixed-model settings,
+but still captures reasoning token usage when returned.
+
+The demo explicitly enables `Telemetry:CaptureSensitiveData` in
+`appsettings.json`. It includes user messages, instructions, and tool
+arguments/results in Application Insights. Use synthetic travel requests for
+the demo. Set `Telemetry__CaptureSensitiveData=false` to omit this content at
+both telemetry layers. Restrict access and retention on the telemetry backend.
+Tool definitions remain available as model-interface metadata.
+
+### Content span events
+
+`GenAiSpanEventProcessor` attaches a completion event to each recorded model,
+agent, and tool span. It runs after conversation and agent enrichment, so each
+event carries the same attribution as its span. Existing content attributes
+remain available for portal views.
+
+| Operation | Span event |
+|-----------|------------|
+| Model call (`chat`) | `gen_ai.client.inference.operation.details` |
+| Agent run (`invoke_agent`) | `travel_planner.agent.operation.details` |
+| Tool execution (`execute_tool`) | `travel_planner.tool.operation.details` |
+
+Events include the operation, agent/conversation IDs, model or tool identity,
+and response/error metadata when available. With
+`Telemetry:CaptureSensitiveData=true`, they also include the SDK's JSON content
+attributes: system instructions (prompts), input/output messages, tool
+definitions, and tool arguments/results. Reasoning text or summaries returned
+by the provider appear as `{"type":"reasoning","content":"..."}` parts in the
+message JSON, including streamed reasoning. Encrypted reasoning state is not
+recorded. Reasoning token counts do not imply that reasoning text is available;
+the app neither requests summaries automatically nor reconstructs hidden
+reasoning.
+
+Setting `Telemetry__CaptureSensitiveData=false` leaves only metadata on these
+events. Failed tool events omit results. Failed model events retain only
+content that the SDK actually captured, without fabricated output.
+
+The [GenAI event conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/client-inference.md#events)
+define `gen_ai.client.inference.operation.details` as a **log event**, with
+structured content. This sample maps that name and its content attributes to
+.NET `ActivityEvent` span events, using JSON strings because the Azure Monitor
+trace exporter stores event attributes as strings. This is a span-event
+adaptation, not a structured GenAI log-event implementation. The agent/tool
+event names are sample-specific.
+
+Azure Monitor exports these span events to Application Insights **`traces`**,
+not `customEvents`. `operation_Id` identifies the trace and
+`operation_ParentId` identifies the owning span. Trace sampling and exporter
+size limits apply; copying content onto events also increases telemetry volume.
+Inspect them with:
+
+```kusto
+traces
+| where message in (
+    "gen_ai.client.inference.operation.details",
+    "travel_planner.agent.operation.details",
+    "travel_planner.tool.operation.details")
+| project timestamp, message, operation_Id, operation_ParentId,
+    agent = tostring(customDimensions["gen_ai.agent.name"]),
+    conversation = tostring(customDimensions["gen_ai.conversation.id"]),
+    instructions = parse_json(tostring(customDimensions["gen_ai.system_instructions"])),
+    inputs = parse_json(tostring(customDimensions["gen_ai.input.messages"])),
+    outputs = parse_json(tostring(customDimensions["gen_ai.output.messages"])),
+    toolArguments = parse_json(tostring(customDimensions["gen_ai.tool.call.arguments"])),
+    toolResult = parse_json(tostring(customDimensions["gen_ai.tool.call.result"]))
+| order by timestamp desc
+```
+
+### Telemetry limits and queries
+
+The app does not synthesize unavailable usage or provider defaults. It also
+does not emit embedding, retrieval, memory, evaluation, skill, or context
+compaction attributes because it does not perform those operations. Failed or
+cancelled Responses lifecycle statuses propagate exceptions rather than
+returning empty successful answers.
+
+In Application Insights Logs, inspect model calls with:
+
+```kusto
+dependencies
+| where tostring(customDimensions["gen_ai.operation.name"]) == "chat"
+| project timestamp,
+    agent = tostring(customDimensions["gen_ai.agent.name"]),
+    conversation = tostring(customDimensions["gen_ai.conversation.id"]),
+    requestedModel = tostring(customDimensions["gen_ai.request.model"]),
+    actualModel = tostring(customDimensions["gen_ai.response.model"]),
+    reasoningLevel = tostring(customDimensions["gen_ai.request.reasoning.level"]),
+    reasoningTokens = tolong(customDimensions["gen_ai.usage.reasoning.output_tokens"]),
+    cachedTokens = tolong(customDimensions["gen_ai.usage.cache_read.input_tokens"]),
+    firstChunkSeconds = todouble(customDimensions["gen_ai.response.time_to_first_chunk"]),
+    duration, success, operation_Id
+| order by timestamp desc
+```
 
 ## Model strategies
 
@@ -344,3 +483,7 @@ MIT — see [LICENSE.md](LICENSE.md).
 [azmon-otel]: https://learn.microsoft.com/azure/azure-monitor/app/opentelemetry-enable
 [ms-otel]: https://github.com/microsoft/opentelemetry-distro-dotnet
 [tutorial]: https://learn.microsoft.com/azure/app-service/tutorial-ai-agent-monitoring-dotnet
+
+### Reasoning in telemetry
+
+Reasoning is recorded only as readable text, as `{"type":"reasoning","content":"..."}` parts in `gen_ai.input.messages` and `gen_ai.output.messages`, and in the matching span events. Providers can also return encrypted reasoning (`protectedData`). It can't be decoded, so the processor removes it from telemetry. When `Telemetry:CaptureSensitiveData` is true and an agent sets `ReasoningEffort`, the Responses request asks for a reasoning summary so there is text to record. If the deployment returns no summary, no reasoning part appears.
