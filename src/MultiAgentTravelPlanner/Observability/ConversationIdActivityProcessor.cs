@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using OpenTelemetry;
 
 namespace MultiAgentTravelPlanner.Observability;
@@ -11,16 +12,40 @@ public sealed class ConversationIdActivityProcessor : BaseProcessor<Activity>
 
     public override void OnEnd(Activity activity)
     {
-        if (activity.GetTagItem(OperationAttributeName) is null
-            || activity.GetTagItem(ConversationAttributeName) is not null)
+        if (activity.GetTagItem(OperationAttributeName) is not string operation)
         {
             return;
         }
 
-        var sessionId = FindTag(activity, SessionAttributeName);
-        if (sessionId is not null)
+        if (activity.GetTagItem(ConversationAttributeName) is null
+            && FindTag(activity, SessionAttributeName) is { } sessionId)
         {
             activity.SetTag(ConversationAttributeName, sessionId);
+        }
+
+        foreach (var tag in new[] { "gen_ai.agent.id", "gen_ai.agent.name", "gen_ai.agent.description" })
+        {
+            if (activity.GetTagItem(tag) is null && FindTag(activity.Parent, tag) is { } value)
+            {
+                activity.SetTag(tag, value);
+            }
+        }
+
+        if (activity.GetTagItem("gen_ai.response.finish_reasons") is string reasons)
+        {
+            activity.SetTag("gen_ai.response.finish_reasons", JsonSerializer.Deserialize<string[]>(reasons));
+        }
+
+        if (activity.Status == ActivityStatusCode.Error)
+        {
+            if (operation == "execute_tool")
+            {
+                activity.SetTag("gen_ai.tool.call.result", null);
+            }
+            else if (operation == "chat" && activity.GetTagItem("gen_ai.response.finish_reasons") is null)
+            {
+                activity.SetTag("gen_ai.response.finish_reasons", new[] { "error" });
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using MultiAgentTravelPlanner.Observability;
 using MultiAgentTravelPlanner.Tools;
 using OpenAI.Responses;
 
@@ -80,7 +81,7 @@ public sealed class AgentCatalog
             description: "Provides weather forecasts, packing recommendations, and activity suggestions based on destination weather conditions.",
             instructions: "You are a concise weather and packing advisor. Use the weather tool to look up the forecast before answering. Recommend appropriate clothing and one or two activities suited to the conditions.",
             tools: [AIFunctionFactory.Create(tools.GetWeatherForecast)],
-            useResponsesApi));
+            useResponsesApi), configuration);
 
         AIAgent currency = WithTelemetry(CreateAgent(client,
             resolveDeployment("CurrencyConverter"),
@@ -89,7 +90,7 @@ public sealed class AgentCatalog
             description: "Handles currency conversion, exchange rate information, and budget allocation across different currencies for travelers.",
             instructions: "You are a currency conversion specialist. Use the exchange-rate tool and present results in a short summary table.",
             tools: [AIFunctionFactory.Create(tools.GetExchangeRate)],
-            useResponsesApi));
+            useResponsesApi), configuration);
 
         AIAgent budget = WithTelemetry(CreateAgent(client,
             resolveDeployment("BudgetOptimizer"),
@@ -98,7 +99,7 @@ public sealed class AgentCatalog
             description: "Optimizes travel budget allocation across accommodation, food, activities, and transport with cost-saving strategies.",
             instructions: "You optimize a travel budget across lodging, food, activities, and transport. Use the daily-budget tool to ground your suggestions and propose at most three cost-saving tips.",
             tools: [AIFunctionFactory.Create(tools.GetDailyBudget)],
-            useResponsesApi));
+            useResponsesApi), configuration);
 
         AIAgent local = WithTelemetry(CreateAgent(client,
             resolveDeployment("LocalKnowledge"),
@@ -107,7 +108,7 @@ public sealed class AgentCatalog
             description: "Provides destination-specific knowledge including cultural insights, safety tips, local transportation, and authentic experiences.",
             instructions: "You are a local expert and cultural guide. Use the cultural-tip tool when relevant. Keep responses under 120 words.",
             tools: [AIFunctionFactory.Create(tools.GetCulturalTip)],
-            useResponsesApi));
+            useResponsesApi), configuration);
 
         AIAgent itinerary = WithTelemetry(CreateAgent(client,
             resolveDeployment("ItineraryPlanner"),
@@ -115,7 +116,7 @@ public sealed class AgentCatalog
             logicalName: "ItineraryPlanner",
             description: "Creates detailed day-by-day travel itineraries with timing, venues, meal recommendations, and weather considerations.",
             instructions: "You build a clear day-by-day itinerary. Be specific about venues and timing. Keep it to 3-5 days unless the user asks for more.",
-            useResponsesApi: useResponsesApi));
+            useResponsesApi: useResponsesApi), configuration);
 
         var specialists = new[] { weather, currency, budget, local, itinerary };
 
@@ -129,7 +130,7 @@ public sealed class AgentCatalog
                 "(WeatherAdvisor, CurrencyConverter, BudgetOptimizer, LocalKnowledge, ItineraryPlanner) in parallel where possible. " +
                 "Aggregate their answers into a single, well-structured travel plan. Always cite which specialist contributed which section.",
             tools: specialists.Select(s => (AITool)s.AsAIFunction()).ToArray(),
-            useResponsesApi));
+            useResponsesApi), configuration);
 
         return new AgentCatalog { Coordinator = coordinator, Specialists = specialists };
     }
@@ -153,6 +154,7 @@ public sealed class AgentCatalog
             {
                 Instructions = instructions,
                 Tools = tools,
+                Reasoning = useResponsesApi ? GetReasoningOptions(configuration, logicalName) : null,
             },
         };
 
@@ -168,7 +170,7 @@ public sealed class AgentCatalog
             chatClient = client.GetChatClient(deployment).AsIChatClient();
         }
 
-        return WithTelemetry(chatClient).AsAIAgent(options);
+        return WithTelemetry(chatClient, configuration, useResponsesApi).AsAIAgent(options);
     }
 
     /// <summary>
@@ -176,15 +178,57 @@ public sealed class AgentCatalog
     /// <c>chat</c> span carrying <c>gen_ai.usage.*</c> for that single call.
     /// Without this the agent span reports only a per-run token rollup.
     /// </summary>
-    private static IChatClient WithTelemetry(IChatClient chatClient) =>
-        chatClient.AsBuilder()
+    private static IChatClient WithTelemetry(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        bool useResponsesApi)
+    {
+        var instrumented = chatClient.AsBuilder()
             .UseOpenTelemetry(
                 sourceName: TelemetrySourceName,
-                configure: otel => otel.EnableSensitiveData = true)
+                configure: otel => otel.EnableSensitiveData =
+                    configuration.GetValue<bool>("Telemetry:CaptureSensitiveData"))
+            .Use(inner => new GenAiTelemetryChatClient(
+                inner,
+                useResponsesApi))
             .Build();
 
-    private static AIAgent WithTelemetry(AIAgent agent) =>
+        return configuration.GetValue<bool>("Telemetry:UseStreaming")
+            ? new StreamingChatClient(instrumented)
+            : instrumented;
+    }
+
+    private static AIAgent WithTelemetry(AIAgent agent, IConfiguration configuration) =>
         agent.AsBuilder()
-            .UseOpenTelemetry(TelemetrySourceName, otel => otel.EnableSensitiveData = true)
+            .UseOpenTelemetry(TelemetrySourceName, otel => otel.EnableSensitiveData =
+                configuration.GetValue<bool>("Telemetry:CaptureSensitiveData"))
             .Build();
+
+    private static ReasoningOptions? GetReasoningOptions(IConfiguration configuration, string logicalName)
+    {
+        var key = $"Agents:{logicalName}:ReasoningEffort";
+        var value = configuration[key];
+        if (value is null)
+        {
+            return null;
+        }
+
+        return new ReasoningOptions
+        {
+            // Encrypted reasoning is unreadable; a summary gives telemetry plain text to record.
+            Output = configuration.GetValue<bool>("Telemetry:CaptureSensitiveData") && value != "none"
+                ? ReasoningOutput.Summary
+                : null,
+            Effort = value switch
+            {
+                "none" => ReasoningEffort.None,
+                "low" => ReasoningEffort.Low,
+                "medium" => ReasoningEffort.Medium,
+                "high" => ReasoningEffort.High,
+                "xhigh" => ReasoningEffort.ExtraHigh,
+                _ => throw new InvalidOperationException(
+                    $"{key} must be 'none', 'low', 'medium', 'high', or 'xhigh'."),
+            },
+        };
+    }
 }
