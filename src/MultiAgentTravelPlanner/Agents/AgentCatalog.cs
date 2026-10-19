@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -21,6 +22,7 @@ namespace MultiAgentTravelPlanner.Agents;
 public sealed class AgentCatalog
 {
     public const string TelemetrySourceName = "MultiAgentTravelPlanner.Agents";
+    public const int MaximumAgentIterations = 6;
 
     public static IReadOnlyList<string> LogicalAgentNames { get; } =
     [
@@ -79,9 +81,15 @@ public sealed class AgentCatalog
             configuration,
             logicalName: "WeatherAdvisor",
             description: "Provides weather forecasts, packing recommendations, and activity suggestions based on destination weather conditions.",
-            instructions: "You are a concise weather and packing advisor. Use the weather tool to look up the forecast before answering. Recommend appropriate clothing and one or two activities suited to the conditions.",
-            tools: [AIFunctionFactory.Create(tools.GetWeatherForecast)],
-            useResponsesApi), configuration);
+            instructions: "You are a concise weather and packing advisor. Use the weather tool to look up the forecast before answering. Recommend appropriate clothing and one or two activities suited to the conditions." +
+                (tools.WeatherDemoEnabled
+                    ? " The lookup returns structured outcomes. If Retryable is true, retry the same destination and date once. Otherwise do not retry. Only State=succeeded with a Forecast is forecast evidence. If unavailable, explain the limitation and label any advice as general, not forecast-based."
+                    : string.Empty),
+            tools: [tools.WeatherDemoEnabled
+                ? AIFunctionFactory.Create(tools.GetWeatherForecastAsync, name: "GetWeatherForecast")
+                : AIFunctionFactory.Create(tools.GetWeatherForecast)],
+            useResponsesApi,
+            weatherLookup: tools.WeatherDemoEnabled ? tools.WeatherLookup : null), configuration);
 
         AIAgent currency = WithTelemetry(CreateAgent(client,
             resolveDeployment("CurrencyConverter"),
@@ -143,7 +151,8 @@ public sealed class AgentCatalog
         string description,
         string instructions,
         IList<AITool>? tools = null,
-        bool useResponsesApi = true)
+        bool useResponsesApi = true,
+        WeatherLookup? weatherLookup = null)
     {
         var options = new ChatClientAgentOptions
         {
@@ -170,7 +179,28 @@ public sealed class AgentCatalog
             chatClient = client.GetChatClient(deployment).AsIChatClient();
         }
 
-        return WithTelemetry(chatClient, configuration, useResponsesApi).AsAIAgent(options);
+        var provenance = AgentTraceProvenance.Create(
+            logicalName, instructions, deployment, tools, options.ChatOptions.Reasoning, useResponsesApi);
+        var agent = WithTelemetry(chatClient, configuration, useResponsesApi).AsAIAgent(options);
+        if (agent.GetService<IChatClient>()?.GetService<FunctionInvokingChatClient>() is { } functionClient)
+        {
+            functionClient.MaximumIterationsPerRequest = MaximumAgentIterations;
+        }
+        else
+        {
+            throw new InvalidOperationException("The agent must expose its function invocation client to enforce the iteration limit.");
+        }
+
+        return agent
+            .AsBuilder()
+            .Use(async (messages, session, runOptions, next, cancellationToken) =>
+            {
+                provenance.Apply(Activity.Current);
+                Activity.Current?.SetTag("travel_planner.agent.max_iterations", MaximumAgentIterations);
+                using var lookupRun = weatherLookup?.BeginRun();
+                await next(messages, session, runOptions, cancellationToken);
+            })
+            .Build();
     }
 
     /// <summary>

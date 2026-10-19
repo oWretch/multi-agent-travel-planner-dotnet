@@ -10,6 +10,25 @@ namespace MultiAgentTravelPlanner.Tools;
 /// </summary>
 public sealed class TravelTools
 {
+    public TravelTools(IConfiguration? configuration = null)
+    {
+        WeatherDemoEnabled = configuration?.GetValue<bool>("Demo:WeatherLookup:Enabled") ?? false;
+        WeatherLookup = new WeatherLookup(
+            configuration?["Demo:WeatherLookup:Mode"] ?? "success",
+            TimeSpan.FromMilliseconds(configuration?.GetValue<int?>("Demo:WeatherLookup:DelayMilliseconds") ?? 300),
+            TimeSpan.FromMilliseconds(configuration?.GetValue<int?>("Demo:WeatherLookup:TimeoutMilliseconds") ?? 30000));
+    }
+
+    public bool WeatherDemoEnabled { get; }
+    public WeatherLookup WeatherLookup { get; }
+
+    [Description("Looks up a synthetic weather forecast asynchronously. Returns State, Retryable, Reason and Forecast. Retry the same inputs once only when Retryable is true; never treat failure as a forecast.")]
+    public Task<WeatherLookupResult> GetWeatherForecastAsync(
+        [Description("City and country.")] string destination,
+        [Description("ISO-8601 date.")] string date,
+        CancellationToken cancellationToken = default) =>
+        WeatherLookup.GetForecastAsync(destination, date, cancellationToken);
+
     [Description("Gets a short weather forecast for a destination on a given date.")]
     public string GetWeatherForecast(
         [Description("City and country, for example 'Lisbon, Portugal'.")] string destination,

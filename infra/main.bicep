@@ -30,7 +30,7 @@ param additionalOpenAiDeployments array = [
     name: 'gpt-5.4-mini'
     modelName: 'gpt-5.4-mini'
     modelVersion: '2026-03-17'
-    capacity: 10
+    capacity: 100
   }
   {
     name: 'model-router'

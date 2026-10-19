@@ -5,12 +5,18 @@ using System.Text;
 using System.Text.Json;
 using Azure.Core.Pipeline;
 using Azure.Monitor.OpenTelemetry.Exporter;
+using MultiAgentTravelPlanner.Agents;
 using MultiAgentTravelPlanner.Observability;
+using MultiAgentTravelPlanner.Tools;
 using OpenTelemetry;
 using OpenTelemetry.Trace;
 
 namespace MultiAgentTravelPlanner.Tests;
 
+[CollectionDefinition("AzureMonitorExporter", DisableParallelization = true)]
+public sealed class AzureMonitorExporterCollection;
+
+[Collection("AzureMonitorExporter")]
 public sealed class GenAiSpanEventProcessorTests
 {
     [Theory]
@@ -182,6 +188,69 @@ public sealed class GenAiSpanEventProcessorTests
         Assert.Equal(activity.GetTagItem("gen_ai.input.messages"), properties.GetProperty("gen_ai.input.messages").GetString());
         Assert.Equal(activity.TraceId.ToHexString(), trace.GetProperty("tags").GetProperty("ai.operation.id").GetString());
         Assert.Equal(activity.SpanId.ToHexString(), trace.GetProperty("tags").GetProperty("ai.operation.parentId").GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AzureMonitorExportsLookupHistoryWithoutRequiringContentCapture(bool captureSensitiveData)
+    {
+        using var handler = new ExportHandler();
+        using var httpClient = new HttpClient(handler);
+        using var provider = Sdk.CreateTracerProviderBuilder()
+            .AddSource(AgentCatalog.TelemetrySourceName)
+            .SetSampler(new AlwaysOnSampler())
+            .AddProcessor(new ConversationIdActivityProcessor())
+            .AddProcessor(new GenAiSpanEventProcessor(captureSensitiveData))
+            .AddProcessor(new SimpleActivityExportProcessor(new AzureMonitorTraceExporter(new AzureMonitorExporterOptions
+            {
+                ConnectionString = $"InstrumentationKey={Guid.NewGuid()};IngestionEndpoint=https://example.invalid",
+                Transport = new HttpClientTransport(httpClient),
+                DisableOfflineStorage = true,
+            })))
+            .Build();
+        using var root = new Activity("execute_tool GetWeatherForecast").SetIdFormat(ActivityIdFormat.W3C).Start();
+        root.SetTag("session.id", "lifecycle-session");
+        root.SetTag("gen_ai.agent.name", "WeatherAdvisor");
+        root.SetTag("gen_ai.agent.version", "sha256:test-version");
+        root.SetTag("gen_ai.tool.call.id", "call_weather");
+        var lookup = new WeatherLookup("fail-once", TimeSpan.Zero);
+        using var run = lookup.BeginRun();
+        await lookup.GetForecastAsync("private-destination", "2026-11-12");
+        await lookup.GetForecastAsync("private-destination", "2026-11-12");
+
+        var items = handler.Payloads.SelectMany(payload => payload.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            .Select(line =>
+            {
+                using var document = JsonDocument.Parse(line);
+                return document.RootElement.Clone();
+            })
+            .Where(item => item.TryGetProperty("tags", out var tags)
+                && tags.TryGetProperty("ai.operation.id", out var operation)
+                && operation.GetString() == root.TraceId.ToHexString())
+            .ToArray();
+        var transitions = items.Where(item => item.GetProperty("data").GetProperty("baseType").GetString() == "MessageData")
+            .Select(item => item.GetProperty("data").GetProperty("baseData"))
+            .Where(data => data.GetProperty("message").GetString() == WeatherLookup.TransitionEventName).ToArray();
+        Assert.Equal(6, transitions.Length);
+        Assert.Equal(new[] { "pending", "running", "failed", "pending", "running", "succeeded" },
+            transitions.Select(data => data.GetProperty("properties").GetProperty("travel_planner.lookup.state").GetString()));
+        Assert.All(transitions, data =>
+        {
+            var properties = data.GetProperty("properties");
+            Assert.Equal("lifecycle-session", properties.GetProperty("gen_ai.conversation.id").GetString());
+            Assert.Equal("WeatherAdvisor", properties.GetProperty("gen_ai.agent.name").GetString());
+            Assert.Equal("sha256:test-version", properties.GetProperty("gen_ai.agent.version").GetString());
+            Assert.Equal("call_weather", properties.GetProperty("gen_ai.tool.call.id").GetString());
+            Assert.DoesNotContain("private-destination", data.GetRawText());
+        });
+        Assert.Single(transitions.Select(data => data.GetProperty("properties")
+            .GetProperty("travel_planner.lookup.id").GetString()).Distinct());
+        Assert.All(items.Where(item => item.GetProperty("data").GetProperty("baseType").GetString() == "MessageData"),
+            item => Assert.Contains(items, parent =>
+                parent.GetProperty("data").GetProperty("baseType").GetString() == "RemoteDependencyData"
+                && parent.GetProperty("data").GetProperty("baseData").GetProperty("id").GetString()
+                    == item.GetProperty("tags").GetProperty("ai.operation.parentId").GetString()));
     }
 
     private sealed class ExportHandler : HttpMessageHandler

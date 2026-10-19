@@ -162,6 +162,9 @@ without an override use `AzureOpenAI:Deployment`.
 
 ## Demo
 
+Use `uv run scripts/evaluate-foundry.py check` to verify the Foundry evaluation
+setup. Generation and scoring use existing Foundry deployments and are billable.
+
 The walkthrough that accompanies this sample is the Microsoft Learn tutorial
 [Monitor a multi-agent app on App Service with OpenTelemetry and Application Insights (.NET)][tutorial].
 It steps through the OpenTelemetry wiring, the portal experience, and common
@@ -306,8 +309,9 @@ definitions, and tool arguments/results. Reasoning text or summaries returned
 by the provider appear as `{"type":"reasoning","content":"..."}` parts in the
 message JSON, including streamed reasoning. Encrypted reasoning state is not
 recorded. Reasoning token counts do not imply that reasoning text is available;
-the app neither requests summaries automatically nor reconstructs hidden
-reasoning.
+the app requests a summary for fixed-model agents when sensitive capture is
+enabled and a non-`none` reasoning effort is configured. These are
+provider-generated summaries, not reconstructed hidden chain-of-thought.
 
 Setting `Telemetry__CaptureSensitiveData=false` leaves only metadata on these
 events. Failed tool events omit results. Failed model events retain only

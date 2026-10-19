@@ -10,6 +10,8 @@ public sealed class GenAiTelemetryChatClient(
     IChatClient innerClient,
     bool useResponsesApi) : DelegatingChatClient(innerClient)
 {
+    public const string ResponseStateEventName = "travel_planner.model.response.state_changed";
+
     public override async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
@@ -130,9 +132,20 @@ public sealed class GenAiTelemetryChatClient(
 
         if (response?.Status is { } status)
         {
-            activity?.SetTag("gen_ai.response.status", status == ResponseStatus.InProgress
+            var state = status == ResponseStatus.InProgress
                 ? "in_progress"
-                : status.ToString().ToLowerInvariant());
+                : status.ToString().ToLowerInvariant();
+            if (activity is not null && activity.GetTagItem("gen_ai.response.status") as string != state)
+            {
+                var previous = activity.GetTagItem("gen_ai.response.status") as string ?? "none";
+                activity.SetTag("gen_ai.response.status", state);
+                activity.AddEvent(new ActivityEvent(ResponseStateEventName, tags: ConversationIdActivityProcessor.CorrelateEvent(activity, new ActivityTagsCollection
+                {
+                    ["gen_ai.response.id"] = response.Id,
+                    ["travel_planner.model.response.previous_state"] = previous,
+                    ["gen_ai.response.status"] = state,
+                })));
+            }
 
             if (status == ResponseStatus.Failed)
             {

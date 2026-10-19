@@ -166,6 +166,16 @@ resource deployerFoundryUserRole 'Microsoft.Authorization/roleAssignments@2022-0
   }
 }
 
+resource projectManagedIdentityFoundryUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: account
+  name: guid(account.id, account::project.id, foundryUserRoleId)
+  properties: {
+    principalId: account::project.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryUserRoleId)
+  }
+}
+
 output name string = account.name
 output projectName string = account::project.name
 output projectEndpoint string = account::project.properties.endpoints['AI Foundry API']

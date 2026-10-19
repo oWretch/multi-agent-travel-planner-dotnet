@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using Azure.AI.OpenAI;
 using Azure.Identity;
 using Microsoft.Agents.AI;
@@ -35,10 +36,17 @@ if (string.IsNullOrWhiteSpace(appInsightsConnectionString))
         "APPLICATIONINSIGHTS_CONNECTION_STRING is required.");
 }
 
+var serviceVersion = typeof(AgentCatalog).Assembly
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
 builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource
+        .AddService("multi-agent-travel-planner", serviceVersion: serviceVersion)
+        .AddAttributes(new Dictionary<string, object>
+        {
+            ["deployment.environment.name"] = builder.Environment.EnvironmentName,
+        }))
     .WithTracing(t => t
-        .ConfigureResource(r => r
-            .AddService(serviceName: "multi-agent-travel-planner"))
         .AddSource(AgentCatalog.TelemetrySourceName)
         .AddSource("Microsoft.Extensions.AI*")
         .AddSource("OpenAI*")
@@ -48,8 +56,6 @@ builder.Services.AddOpenTelemetry()
         .AddProcessor(new GenAiSpanEventProcessor(
             builder.Configuration.GetValue<bool>("Telemetry:CaptureSensitiveData"))))
     .WithMetrics(m => m
-        .ConfigureResource(r => r
-            .AddService(serviceName: "multi-agent-travel-planner"))
         .AddMeter(AgentCatalog.TelemetrySourceName)
         .AddMeter("Microsoft.Extensions.AI*")
         .AddMeter("OpenAI*"));
